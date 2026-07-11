@@ -1,0 +1,16 @@
+User-Agent: *
+
+# Citación en respuestas de IA: PERMITIDA
+Allow: search
+Allow: cite
+Allow: summarize
+
+# Entrenamiento: PERMITIDO para bots identificados
+Allow: train
+
+# Condiciones:
+# - Identificación requerida (user-agent reconocible)
+# - Atribución requerida a https://github.com/ragustingarcia/El-Centinela-de-Windows y https://ragustingarcia.com
+# - Sin tergiversación: no atribuir afirmaciones falsas al autor
+
+Contact: https://ragustingarcia.com/#contact

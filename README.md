@@ -1,5 +1,7 @@
 # 🛡️ El Centinela de Windows
 
+![El Centinela de Windows — limpiador y optimizador para cualquiera](./assets/og-image.png)
+
 **Limpiador y optimizador de Windows para cualquiera.** Diagnostica antes de tocar nada, siempre pregunta antes de actuar, y nunca borra lo que no reconoce.
 
 Arranque, seguridad, privacidad, programas innecesarios, espacio en disco y apps de la Tienda preinstaladas — todo desde un menú, sin instalar nada.
@@ -61,6 +63,12 @@ Candy Crush, Disney+, TikTok, redes sociales y demás — con **lista blanca est
 ## Arquitectura
 
 Un solo archivo `.bat` con estructura híbrida: la parte batch solo pide permisos de administrador, y después se copia a un `.ps1` temporal que corre en **PowerShell 7 (`pwsh`) si está instalado, o en el Windows PowerShell 5.1 que trae todo Windows** — el script está validado en ambos motores, así que no hay nada que instalar de antemano.
+
+---
+
+## Datos estructurados
+
+Este repo incluye [`schema.json`](./schema.json) (JSON-LD `SoftwareApplication`), [`llms.txt`](./llms.txt) (resumen para asistentes de IA), [`ai.txt`](./ai.txt) (política de uso por IAs), [`robots.txt`](./robots.txt) y [`sitemap.xml`](./sitemap.xml) — mismo kit de atribución/SEO que uso en todos mis proyectos, adaptado acá a un repo sin dominio propio (la página del repo funciona como ancla).
 
 ---
 
