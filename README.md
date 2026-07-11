@@ -11,9 +11,16 @@ Arranque, seguridad, privacidad, programas innecesarios, espacio en disco y apps
 
 ## Instalación
 
-No hace falta instalar nada. Descargá `El Centinela de Windows.bat` y hacé doble clic.
+No hace falta instalar nada — funciona con el PowerShell que ya trae Windows 10/11:
 
-Va a pedir permisos de administrador (los necesita para tocar el registro, servicios y Windows Defender) — aceptá el cartel de Windows. Es re-ejecutable: lo que ya está resuelto se detecta solo y se saltea.
+1. **Descargá el archivo**: botón verde **`<> Code` → `Download ZIP`**, y extraé el ZIP (clic derecho → *Extraer todo*).
+2. **Doble clic** en `El Centinela de Windows.bat`.
+3. Windows va a pedir **permisos de administrador** (los necesita para revisar el registro, servicios y Windows Defender) → **Sí**.
+4. Elegí una opción del menú. La **[1] Reporte completo** es la recomendada para empezar: muestra todo y no modifica nada.
+
+> **¿Windows te mostró un cartel azul ("Windows protegió tu PC")?** Es normal para archivos descargados de internet sin firma digital paga — no significa que haya un problema. Clic en **"Más información" → "Ejecutar de todas formas"**. Alternativa: clic derecho al `.bat` → Propiedades → tildar **Desbloquear** → Aceptar.
+
+Es re-ejecutable: lo que ya está resuelto se detecta solo y se saltea.
 
 ---
 
@@ -53,7 +60,7 @@ Candy Crush, Disney+, TikTok, redes sociales y demás — con **lista blanca est
 
 ## Arquitectura
 
-Un solo archivo `.bat` con estructura híbrida: la parte batch solo pide permisos de administrador, y después se copia a un `.ps1` temporal que corre en PowerShell 7 (`pwsh`) — que sí puede mostrar progreso y manejar registro, WMI y Windows Defender correctamente.
+Un solo archivo `.bat` con estructura híbrida: la parte batch solo pide permisos de administrador, y después se copia a un `.ps1` temporal que corre en **PowerShell 7 (`pwsh`) si está instalado, o en el Windows PowerShell 5.1 que trae todo Windows** — el script está validado en ambos motores, así que no hay nada que instalar de antemano.
 
 ---
 

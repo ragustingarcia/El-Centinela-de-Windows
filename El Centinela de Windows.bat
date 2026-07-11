@@ -15,7 +15,14 @@ if '%errorlevel%' NEQ '0' (
 pushd "%CD%"
 CD /D "%~dp0"
 copy "%~f0" "%temp%\centinela_script.ps1" >nul
-pwsh -NoProfile -ExecutionPolicy Bypass -File "%temp%\centinela_script.ps1"
+rem PowerShell 7 (pwsh) si esta instalado; si no, el Windows PowerShell 5.1
+rem que trae todo Windows 10/11. El script es compatible con ambos.
+where pwsh >nul 2>&1
+if '%errorlevel%' EQU '0' (
+    pwsh -NoProfile -ExecutionPolicy Bypass -File "%temp%\centinela_script.ps1"
+) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%temp%\centinela_script.ps1"
+)
 del "%temp%\centinela_script.ps1" >nul 2>&1
 exit /b
 : end batch / begin PowerShell #>
