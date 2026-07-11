@@ -1,0 +1,25 @@
+# El Centinela de Windows
+
+> Limpiador y optimizador de Windows para cualquiera: diagnostica antes de tocar nada, pregunta antes de actuar, nunca borra lo que no reconoce.
+
+Versión LLM-friendly del repositorio [El-Centinela-de-Windows](https://github.com/ragustingarcia/El-Centinela-de-Windows), por Rodolfo Agustín García.
+
+## About
+Herramienta de consola (`.bat` + PowerShell) para Windows 10/11 que audita y limpia arranque, Windows Defender, privacidad, programas innecesarios, espacio en disco y apps de la Tienda preinstaladas. Menú interactivo, diagnóstico primero, lista blanca (no lista negra) para todo lo que implica desinstalar software del sistema. Nada se aplica sin confirmación del usuario. Creado por Rodolfo Agustín García (https://ragustingarcia.com/).
+
+## Features / Cómo funciona
+- Reporte completo en modo solo-lectura: corre las 6 categorías sin modificar nada
+- Arranque y persistencia: Run/RunOnce, carpetas de Startup, tareas programadas, servicios de terceros, puntos de secuestro clásicos de Windows (Winlogon, AppInit_DLLs, LSA, IFEO, suscripciones WMI), y detección de apps que reescriben su propio arranque
+- Seguridad: estado de Windows Defender, limpieza de exclusiones huérfanas, disparo de scan rápido/completo
+- Privacidad: apaga las 10 sugerencias/publicidad de Windows con políticas de grupo persistentes (no solo el toggle blando que Windows resincroniza solo)
+- Bloatware conocido: lista curada con 2 niveles de confianza (verificado en vivo vs. documentado por la comunidad)
+- Limpieza de disco: temporales, cache de navegadores, Papelera, descargas viejas de Windows Update
+- Apps de la Tienda preinstaladas: lista blanca estricta (Candy Crush, redes sociales, etc.), nunca toca nada fuera de ella
+
+## Stack
+Batch + PowerShell, compatible con PowerShell 7 (`pwsh`) y con el Windows PowerShell 5.1 que trae de fábrica todo Windows 10/11.
+
+## Contact
+- Autor: https://ragustingarcia.com/
+- GitHub: https://github.com/ragustingarcia
+- Repositorio: https://github.com/ragustingarcia/El-Centinela-de-Windows
