@@ -1,0 +1,17 @@
+name: Security regression tests
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  isolated-tests:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        engine: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Isolated security checks
+        shell: '${{ matrix.engine }}'
+        run: '& ./tests/security.tests.ps1'
