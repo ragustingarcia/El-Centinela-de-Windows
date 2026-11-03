@@ -20,6 +20,7 @@ $script:rules=0;$script:journal=0
 function Test-IsAdmin {return $false}
 Reject {Block-VerifiedListener 5000 100 'C:\App\app.exe'} 'Block requires elevation'
 function Test-IsAdmin {return $true}
+Reject {Invoke-IocScan} 'User Python never launched from elevated menu'
 function New-NetFirewallRule {param($Name,$DisplayName,$Direction,$Action,$Protocol,$LocalPort,$Program,$Profile,$ErrorAction) if(-not $script:journal){throw 'Backup missing'};$script:rules++}
 function Get-CimInstance {param($ClassName,$Filter,$OperationTimeoutSec) [pscustomobject]@{ProcessId=100;Name='app.exe';ExecutablePath='C:\App\app.exe'}}
 function Get-NetTCPConnection {param($State,$LocalPort,$ErrorAction) [pscustomobject]@{OwningProcess=100;LocalPort=5000}}
@@ -108,7 +109,7 @@ try{
 }
 $scanner=Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party/zero-breach/scanner.py'
 Assert ((Get-FileHash -LiteralPath $scanner -Algorithm SHA256).Hash -eq 'BB0E6A7A36EE659C0494D02E9F7495D5FD4701F1AB7E57529E79925CB581AE15') 'Bundled IOC engine matches reviewed hash'
-$contract=(& python -I -X utf8 $scanner --describe)|ConvertFrom-Json
+$contract=(& python -I -S -X utf8 $scanner --describe)|ConvertFrom-Json
 Assert ($LASTEXITCODE -eq 0 -and $contract.schema_version -eq '1.6') 'Bundled IOC describe contract compatible without running scan'
 $summary=[pscustomobject]@{Engine=$PSVersionTable.PSVersion.ToString();Passed=$script:passed;Boundary='Mocked networking, support responses, firewall and update commands; synthetic IOC/external reports. No real network changes or updates installed.'}
 if($ResultPath){$summary|ConvertTo-Json|Set-Content -LiteralPath $ResultPath -Encoding UTF8}

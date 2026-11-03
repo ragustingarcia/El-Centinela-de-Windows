@@ -261,6 +261,7 @@ function Read-IocReport([string]$Path) {
     [pscustomobject]@{Engine='Zero-Breach-Toolkit';Schema=$doc.schema_version;ExitCode=$doc.exit_code;Verdict=$doc.verdict;Coverage=$doc.coverage;Caveats=$doc.must_relay;NextSteps=$doc.next_steps;EvidenceReport=$Path;Warning='Sin coincidencias no equivale a ausencia de compromiso. No borrar evidencia automaticamente.'}
 }
 function Invoke-IocScan {
+    if(Test-IsAdmin){throw 'Ejecutar el menu sin administrador para IOC; solo el helper de firewall debe elevarse. No se ejecuta Python de usuario con privilegios altos.'}
     $exe=Get-KnownPython
     $scanner=Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party\zero-breach\scanner.py'
     if((Get-FileHash -LiteralPath $scanner -Algorithm SHA256).Hash -ne 'BB0E6A7A36EE659C0494D02E9F7495D5FD4701F1AB7E57529E79925CB581AE15'){throw 'Motor IOC alterado; se rechaza su ejecucion.'}
@@ -270,7 +271,7 @@ function Invoke-IocScan {
         $isolation=Invoke-ElevatedSecurity 'IsolatePython' @{}
         if($isolation.Status -ne 'Verified'){throw 'Aislamiento de red no verificado. No se ejecuta el analisis IOC.'}
         $rule=$isolation.Rule
-        & $exe -I -X utf8 $scanner --no-menu --json $json --report $txt
+        & $exe -I -S -X utf8 $scanner --no-menu --json $json --report $txt
         $code=$LASTEXITCODE
         if($code -notin @(0,2,3) -or -not (Test-Path -LiteralPath $json)){throw "Analisis incompleto/error de ejecucion ($code). Revisar archivos guardados en $folder"}
         $result=Read-IocReport $json
