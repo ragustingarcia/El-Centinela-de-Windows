@@ -106,6 +106,7 @@ function Block-VerifiedListener([int]$Port,[int]$ProcessId,[string]$ExpectedProg
     if($ProcessId -le 4 -or $Port -lt 1 -or $Port -gt 65535 -or $Port -in @(135,139,445,3389,5985,5986)){throw 'Servicio del sistema/administracion protegido; requiere evaluacion especifica.'}
     $p=Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -OperationTimeoutSec 15
     if(-not $p.ExecutablePath -or $p.ExecutablePath -ne $ExpectedProgram){throw 'El proceso o su ejecutable cambiaron; repetir investigacion.'}
+    Test-LocalPath $p.ExecutablePath|Out-Null
     if($p.ExecutablePath.StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Ejecutable de Windows protegido; requiere revision especifica.'}
     $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop|Where-Object OwningProcess -eq $ProcessId)
     if(-not $listeners.Count){throw 'La escucha ya cambio; repetir investigacion.'}
