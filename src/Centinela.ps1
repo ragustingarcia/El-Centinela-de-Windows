@@ -1,6 +1,6 @@
 ﻿param([switch]$LibraryOnly, [switch]$Audit, [string]$ReportPath)
 $ErrorActionPreference = 'Stop'
-$script:Version = '0.3.0-rc.1'
+$script:Version = '0.3.1-rc.1'
 $script:PrivacyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
 $script:PrivacyNames = @('SubscribedContent-338388Enabled','SubscribedContent-338389Enabled','SubscribedContent-353698Enabled','SystemPaneSuggestionsEnabled','SilentInstalledAppsEnabled','PreInstalledAppsEnabled','OemPreInstalledAppsEnabled','RotatingLockScreenOverlayEnabled','SoftLandingEnabled')
 function Confirm-Choice($Question) {

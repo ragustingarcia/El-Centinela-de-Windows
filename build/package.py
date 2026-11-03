@@ -8,7 +8,7 @@ import zipfile
 root = pathlib.Path(__file__).resolve().parents[1]
 out = pathlib.Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
-version = "0.3.0-rc.1"
+version = "0.3.1-rc.1"
 paths = ["El Centinela de Windows.bat", "src/Centinela.ps1", "src/Summary.ps1", "src/DeepSecurity.ps1", "src/SecurityWorker.ps1", "tools/ExternalProbe.ps1", "third_party/zero-breach/scanner.py", "third_party/zero-breach/LICENSE", "third_party/zero-breach/NOTICE", "third_party/zero-breach/IOCS-LICENSE.md", "third_party/zero-breach/PROVENANCE.json", "README.md", "LICENSE",
          "CHANGELOG.md", "docs/SECURITY-CANDIDATE.md", "schema.json", "llms.txt",
          "ai.txt", "robots.txt", "sitemap.xml", "assets/og-image.png"]

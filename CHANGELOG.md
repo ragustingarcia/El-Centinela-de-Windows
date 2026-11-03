@@ -1,5 +1,16 @@
 # Cambios
 
+## 0.3.1-rc.1
+
+- Resumen con veredicto unico: SEGURA / REVISAR / EN RIESGO y una frase simple.
+- Puertos: se descartan PID 0 y filas efimeras; cruce con la lista real de .NET.
+- Puertos sensibles (PostgreSQL, MySQL, RDP, SMB, Docker...) abiertos a la red se marcan aparte.
+- UPnP e IOC explican el motivo real cuando no se pueden completar.
+- Tabla de red legible: acepta numero de fila o puerto; un error no borra la investigacion.
+- Nueva comprobacion de UAC y aviso cuando se ejecuta como administrador.
+- Deteccion de compilaciones Insider; un 404 del mes en curso de MSRC ya no cuenta como hueco.
+- Exportaciones con contrasenas/tokens redactados.
+
 ## 0.3.0-rc.1
 
 - Investigacion de procesos/puertos/rutas y reglas, con bloqueo reversible especifico.
