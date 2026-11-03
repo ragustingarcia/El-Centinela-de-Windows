@@ -8,8 +8,8 @@ import zipfile
 root = pathlib.Path(__file__).resolve().parents[1]
 out = pathlib.Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
-version = "0.2.0-rc.1"
-paths = ["El Centinela de Windows.bat", "src/Centinela.ps1", "README.md", "LICENSE",
+version = "0.2.0-rc.2"
+paths = ["El Centinela de Windows.bat", "src/Centinela.ps1", "src/Summary.ps1", "README.md", "LICENSE",
          "CHANGELOG.md", "docs/SECURITY-CANDIDATE.md", "schema.json", "llms.txt",
          "ai.txt", "robots.txt", "sitemap.xml", "assets/og-image.png"]
 manifest = {}
