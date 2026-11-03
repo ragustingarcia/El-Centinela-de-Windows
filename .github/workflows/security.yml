@@ -5,15 +5,15 @@ permissions:
 jobs:
   isolated-tests:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        engine: [powershell, pwsh]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Isolated security checks
-        shell: '${{ matrix.engine }}'
+      - name: Windows PowerShell 5.1 isolated checks
+        shell: powershell
+        run: '& ./tests/security.tests.ps1'
+      - name: PowerShell 7 isolated checks
+        shell: pwsh
         run: '& ./tests/security.tests.ps1'
       - name: Reproducible release archive
         shell: pwsh
