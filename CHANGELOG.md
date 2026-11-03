@@ -1,12 +1,23 @@
 # Cambios
 
+## 0.3.0-rc.1
+
+- Investigacion de procesos/puertos/rutas y reglas, con bloqueo reversible especifico.
+- Router UPnP, soporte Microsoft, licencias ESU/LTSC, WUA y parches de seguridad elegidos.
+- Correlacion KB/CVE MSRC y fuentes incompletas explicitas.
+- Motor IOC Zero-Breach fijado, verificacion de hash y aislamiento temporal de Python.
+- Salud antivirus WSC y prueba externa portable/importable.
+- Cobertura avanzada pendiente visible; no se oculta borrando advertencias.
+
+
+
 ## 0.2.0-rc.2
 
-- Menú legible con opciones en líneas separadas, resumen general y detalle técnico separado.
-- Análisis de protección, firmas, firewall y escuchas con niveles y propuestas; lagunas siempre visibles.
-- Exportación directa al Escritorio real: TXT legible y JSON del mismo diagnóstico, con advertencias e historial de acciones.
-- Acciones Defender elegidas individualmente: firmas, análisis rápido y activación de protección cuando corresponde; permisos y verificación posterior explícitos.
-- Sin escaneo silencioso al exportar, sin elevación automática y sin presentar una solicitud de análisis como ausencia de infección.
+- Menï¿½ legible con opciones en lï¿½neas separadas, resumen general y detalle tï¿½cnico separado.
+- Anï¿½lisis de protecciï¿½n, firmas, firewall y escuchas con niveles y propuestas; lagunas siempre visibles.
+- Exportaciï¿½n directa al Escritorio real: TXT legible y JSON del mismo diagnï¿½stico, con advertencias e historial de acciones.
+- Acciones Defender elegidas individualmente: firmas, anï¿½lisis rï¿½pido y activaciï¿½n de protecciï¿½n cuando corresponde; permisos y verificaciï¿½n posterior explï¿½citos.
+- Sin escaneo silencioso al exportar, sin elevaciï¿½n automï¿½tica y sin presentar una solicitud de anï¿½lisis como ausencia de infecciï¿½n.
 
 
 ## 0.2.0-rc.1 â€” 2026-11-02

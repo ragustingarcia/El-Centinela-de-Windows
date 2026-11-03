@@ -56,9 +56,28 @@ function Get-ReportAnalysis($Report) {
     }
     $listeners=@(Get-CheckData $Report 'ListeningTCP')
     $nonlocal=@($listeners|Where-Object { $_.LocalAddress -and $_.LocalAddress -ne '::1' -and $_.LocalAddress -notmatch '^127\.' })
-    if($nonlocal.Count){$findings.Add((New-Finding 'Review' 'Servicios escuchando en interfaces de red' ("$($nonlocal.Count) escuchas fuera de loopback. Su alcance depende de firewall, router y red; no prueban exposicion a Internet.") '' 'Revisar puertos y procesos en Detalle tecnico. No se cierran automaticamente.'))}
+    if($nonlocal.Count){$findings.Add((New-Finding 'Review' 'Servicios escuchando en interfaces de red' ("$($nonlocal.Count) escuchas fuera de loopback. Su alcance depende de firewall, router y red; no prueban exposicion a Internet.") 'InspectNetwork' 'Investigar procesos, rutas y reglas. Permite proponer bloqueo reversible del programa/puerto identificado.'))}
     $privacy=@(Get-CheckData $Report 'Privacy'|Where-Object {$null -eq $_.Value -or $_.Value -ne 0})
     if($privacy.Count){$findings.Add((New-Finding 'Review' 'Preferencias de publicidad' ("$($privacy.Count) ajustes no estan explicitamente desactivados; ausencia no demuestra publicidad activa.") 'Privacy' 'Usar Reducir publicidad, con respaldo y deshacer.'))}
+    $health=@(Get-CheckData $Report 'AntivirusHealth')
+    if($health.Count){$findings.Add((New-Finding $(if($health[0].Code -eq 0){'OK'}else{'Review'}) 'Salud de proveedor antivirus' ([string]$health[0].Health) '' $health[0].Scope))}
+    foreach($id in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe')) {
+        $title=@{NetworkInvestigation='Red, procesos y puertos';Router='Router';Support='Soporte Windows y ESU/LTSC';Updates='Parches Windows';CVE='Correlacion CVE Microsoft';IOC='Indicadores de compromiso';ExternalProbe='Exposicion comprobada desde Internet'}[$id]
+        $checks=@($Report.Checks|Where-Object Id -eq $id)
+        if(-not $checks.Count){$findings.Add((New-Finding 'Unknown' $title 'Comprobacion avanzada pendiente.' 'DeepChecks' 'Ejecutar desde opcion 8; las consultas online requieren confirmacion.'))}
+        elseif($checks[0].Status -eq 'Checked') {
+            $data=@($checks[0].Data)
+            $detail=if($id -eq 'Updates' -and $data.Count){[string]@($data[0].Updates).Count+' parches pendientes; revisar categoria de seguridad e instalar desde opcion 8.'}elseif($id -eq 'CVE' -and $data.Count){[string]@($data[0].Matches).Count+' correlaciones KB/CVE. '+$data[0].Scope}elseif($id -eq 'Support' -and $data.Count){'Resultado: '+$data[0].Status+' | Fuente: '+$data[0].Source}elseif($id -eq 'IOC' -and $data.Count){'Exit code: '+$data[0].ExitCode+' | '+($data[0].Verdict|ConvertTo-Json -Compress -Depth 4)}else{'Resultado guardado; alcance y evidencia en detalle/exportacion.'}
+            $findings.Add((New-Finding 'Review' $title $detail 'DeepChecks' 'Ver resultado y siguientes acciones en opcion 8. Checked significa que la consulta corrio, no que todo este resuelto.'))
+            if($data.Count -and $id -eq 'CVE' -and @($data[0].Gaps).Count){$findings.Add((New-Finding 'Unknown' 'Fuentes CVE incompletas' (@($data[0].Gaps) -join '; ') 'DeepChecks' 'Reintentar fuentes; cero coincidencias no acredita ausencia de vulnerabilidades.'))}
+            if($data.Count -and $id -eq 'Support' -and $data[0].Status -eq 'Unknown'){$findings.Add((New-Finding 'Unknown' 'Soporte sin confirmar' $data[0].Detail 'DeepChecks' 'Revisar la tabla oficial correspondiente al canal/edicion.'))}
+            if($data.Count -and $id -eq 'IOC'){
+                foreach($caveat in $data[0].Caveats){$text=if($caveat.text){$caveat.text}else{[string]$caveat};$findings.Add((New-Finding 'Review' 'Alcance IOC' $text))}
+                if($data[0].ExitCode -eq 2){$findings.Add((New-Finding 'Alert' 'Indicadores IOC para investigar' 'El motor encontro coincidencias accionables; conservar evidencias y revisar contexto. No se borran automaticamente.'))}
+                if($data[0].ExitCode -eq 3){$findings.Add((New-Finding 'Unknown' 'Analisis IOC incompleto' 'Hay lagunas de cobertura; consultar el informe original.'))}
+            }
+        }
+    }
     $verdict=if(@($findings|Where-Object Level -eq Alert).Count){'Hay configuraciones de proteccion que requieren atencion prioritaria.'}elseif(@($findings|Where-Object Level -eq Unknown).Count){'Diagnostico parcial: hay controles que no se pudieron confirmar.'}else{'Sin alertas en los controles interpretados. Revisar las recomendaciones y los limites de cobertura.'}
     [pscustomobject]@{
         Verdict=$verdict
@@ -157,17 +176,19 @@ function Invoke-SecuritySolution([string]$Action) {
     return $result
 }
 function Show-Solutions($Report) {
-    $items=@($Report.Analysis.Findings|Where-Object {$_.Level -in @('Alert','Review')})
+    $items=@($Report.Analysis.Findings|Where-Object {$_.Level -in @('Alert','Review','Unknown')})
     if(-not $items.Count){Write-Host 'No hay correcciones propuestas por los controles disponibles.';return}
     for($i=0;$i -lt $items.Count;$i++){Write-Host "[$($i+1)] $($items[$i].Title)";Write-Host ('    '+$items[$i].Advice)}
     $answer=Read-Host 'Numero de propuesta (Enter vuelve)';$index=0
     if(-not [int]::TryParse($answer,[ref]$index) -or $index -lt 1 -or $index -gt $items.Count){return}
     $item=$items[$index-1]
+    if($item.Action -eq 'InspectNetwork'){Add-DeepResult $Report 'NetworkInvestigation' {Show-NetworkInvestigation};return}
+    if($item.Action -eq 'DeepChecks'){Show-DeepMenu $Report;return}
     if($item.Action -eq 'Privacy'){Write-Host 'Usar opcion 2 del menu: vista previa, respaldo y deshacer.';return}
     if(-not $item.Action){Write-Host $item.Advice;return}
     Write-Host 'Se aplica solo la accion elegida. Puede requerir permisos, descargar definiciones o iniciar un analisis con remediacion de Defender. No modifica exclusiones ni desactiva protecciones.'
     if(Confirm-Choice ('Ejecutar '+$item.Title+'?')) {
-        $result=Invoke-SecuritySolution $item.Action
+        $result=if(Test-IsAdmin){Invoke-SecuritySolution $item.Action}else{Invoke-ElevatedSecurity $item.Action @{}}
         if(-not $Report.PSObject.Properties['ActionHistory']){$Report|Add-Member -MemberType NoteProperty -Name ActionHistory -Value @()}
         $Report.ActionHistory=@($Report.ActionHistory)+@($result)
         $result|Format-List|Out-Host
@@ -184,6 +205,7 @@ function Show-MainMenu {
     Write-Host '  [5] Exportar ultimo diagnostico al Escritorio'
     Write-Host '  [6] Ver detalle tecnico del ultimo diagnostico'
     Write-Host '  [7] Soluciones propuestas y acciones automaticas'
+    Write-Host '  [8] Seguridad avanzada: red, router, parches, CVE e IOC'
     Write-Host '  [0] Salir'
     Write-Host '  ----------------------------------------------------------'
 }

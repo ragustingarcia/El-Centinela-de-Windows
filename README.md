@@ -1,33 +1,33 @@
-# El Centinela de Windows 0.2.0-rc.2
+# El Centinela de Windows 0.3.0-rc.1
 
-![El Centinela de Windows](assets/og-image.png)
+Mantenimiento y seguridad de Windows por usuario. Extraer el ZIP completo y abrir El Centinela de Windows.bat. Requiere PowerShell 5.1; el menu normal no pide administrador.
 
-Release candidata usable de mantenimiento por usuario: diagnÃ³stico de seguridad, reducciÃ³n de sugerencias/publicidad con respaldo y deshacer, y limpieza de temporales antiguos con vista previa.
+## Uso
 
-## Empezar
+1. Diagnostico general: resumen interpretado e inventario. Los controles avanzados pendientes cuentan como sin comprobar.
+2. Publicidad: vista previa, respaldo, verificacion y deshacer de nueve preferencias por usuario.
+3. Temporales: archivos creados y modificados hace mas de 14 dias, vista previa y revalidacion, sin eliminar carpetas recursivamente. Borrado permanente.
+4. Deshacer privacidad: conserva cambios posteriores ajenos.
+5. Exportar al Escritorio real: TXT legible y JSON con el mismo diagnostico, advertencias, evidencias y resultados.
+6. Detalle tecnico.
+7. Soluciones: elegir una propuesta ejecuta su investigacion o accion, con confirmacion. Las escuchas abren investigacion de procesos/puertos y permiten proponer bloqueo reversible.
+8. Seguridad avanzada: elegir comprobaciones locales u online y acciones concretas.
 
-Descargar el ZIP de la release, extraerlo completo y abrir `El Centinela de Windows.bat`. Conservar `src` junto al BAT. Usa Windows PowerShell 5.1, sin instalar herramientas ni pedir administrador. Si una consulta exige mÃ¡s permisos, el informe muestra `Unavailable`; no significa que estÃ© todo bien.
+## Seguridad avanzada
 
-1. **DiagnÃ³stico:** Defender, proveedores antivirus, firewall efectivo, escuchas TCP, tareas, servicios, apps y ajustes de publicidad. No modifica configuraciÃ³n.
-2. **Privacidad:** vista previa, confirmaciÃ³n exacta, respaldo previo y comprobaciÃ³n de cada valor. Afecta esta cuenta; conservar las fotos de Spotlight. Windows puede restablecer ajustes en actualizaciones o por GPO/MDM. Puede requerir cerrar sesiÃ³n.
-3. **Temporales:** solo archivos de Temp de esta cuenta, creados y modificados hace mÃ¡s de 14 dÃ­as; nunca borrado recursivo de carpetas. Omite enlaces y rechaza rutas remotas. Cerrar instaladores y aplicaciones primero. El borrado es permanente.
-4. **Deshacer privacidad:** elegir el respaldo; conserva valores modificados despuÃ©s por otras apps. Respaldos locales bajo `%LOCALAPPDATA%/Centinela/State`, con acceso restringido.
-5. **Exportar al Escritorio:** carpeta nueva con Resumen.txt y Diagnostico.json del último diagnóstico, incluidas advertencias y resultados de acciones. Usa el Escritorio real de Windows, incluso redirigido/OneDrive; puede sincronizarse. No vuelve a escanear ni sobrescribe informes.
-6. **Detalle técnico:** consultar el inventario completo cuando haga falta.
-7. **Soluciones:** propuestas según los hallazgos. Actualizar firmas, solicitar análisis rápido o activar protección en tiempo real (requiere sesión elevada) cuando Defender está en modo Normal; confirmación individual y comprobación posterior. Firewall y cambios sensibles reciben instrucciones específicas.
+- Red: procesos, ejecutables, puertos, rutas, adaptadores VPN y reglas efectivas. Bloqueo entrante por programa/puerto identificado; preserva puertos de sistema y administracion remota. UAC eleva solo la accion y exige misma cuenta. Se registra antes de crear regla y puede deshacerse desde el menu. La aplicacion puede seguir escuchando aunque el firewall bloquee trafico.
+- Router: consulta de mapeos UPnP sin cambiarlos. Si el router no los publica, registra cobertura pendiente. Redirecciones manuales y administracion remota necesitan su interfaz y credenciales; no se inventa una auditoria completa.
+- Windows Update: consulta explicita al origen configurado; muestra parches/KB y reinicio pendiente. Instalacion elegida de parches de seguridad: revalida IDs/categoria, acepta las EULA tras confirmacion, descarga e instala sin reiniciar automaticamente. Los resultados parciales o pendientes no se anuncian como resueltos.
+- Soporte: consulta tabla oficial de Microsoft para version/edicion reconocida y licencias ESU detectadas. Canal LTSC/no reconocido o pagina que cambio permanece Unknown, con evidencia para revisar.
+- CVE: correlacion de KB pendientes con CVRF Microsoft de los ultimos tres meses; registra fuentes fallidas. No equivale a catalogar todas las vulnerabilidades de cada aplicacion o firmware.
+- Salud antivirus: API Windows Security Center ademas del estado Defender. Es salud informada por proveedores, no un ataque de prueba contra el antivirus.
+- IOC: Zero-Breach-Toolkit incluido a commit/hash fijos, con sus licencias. Requiere Python instalado en Programs/Python de esta cuenta. Aisla ese python.exe mediante bloqueo saliente temporal del firewall (UAC), ejecuta el escaner y retira la regla (otro UAC). Puede afectar otros procesos Python. Si se interrumpe, retirar reglas Centinela-IOC desde Firewall. El bloqueo de Python no es una sandbox total de todos los servicios/subprocesos del sistema. No se visitan indicadores para validarlos.
+- Exposicion externa: tools/ExternalProbe.ps1 se ejecuta en otra PC fuera de la LAN/VPN, contra TU IP publica y puertos autorizados. Importar su JSON en opcion 8. Se conserva alcance/fecha y procedencia declarada, sin fingir una comprobacion externa desde dentro de la red.
 
-## Seguridad y lÃ­mites
+## Privacidad y alcance
 
-Ejecutar desde la sesiÃ³n habitual de la cuenta a mantener. No desinstala antivirus, apps, servicios o drivers; no cambia reglas de firewall, RDP, cifrado ni polÃ­ticas empresariales. Esas operaciones requieren validaciones adicionales y se conservan como tareas guiadas desde Windows.
+Informes y artefactos IOC contienen datos privados; el Escritorio puede sincronizarse por OneDrive. No se suben informes automaticamente. Las consultas online se confirman antes y pueden revelar la IP al proveedor. Ante indicios serios, preservar evidencia; no limpiar ni borrar automaticamente archivos sospechosos.
 
-La detecciÃ³n de proveedores antivirus no prueba su salud. Una escucha local no demuestra exposiciÃ³n a Internet. No certifica ausencia de compromiso, no comprueba todas las CVE/ESU/LTSC y no incluye aÃºn el motor opcional Zero-Breach-Toolkit. Las consultas de Windows no constituyen aislamiento de red.
+Es prerelease. Ver docs/SECURITY-CANDIDATE.md para pruebas y pendientes. No garantiza ausencia de compromiso. Incluye MIT para Centinela; el motor tercero conserva Apache-2.0 y sus conjuntos de indicadores mantienen sus propias condiciones.
 
-Esta es una **prerelease**, no una versiÃ³n estable certificada en toda combinaciÃ³n de hardware/ediciÃ³n. Ver [validaciÃ³n y lÃ­mites](docs/SECURITY-CANDIDATE.md) y [cambios](CHANGELOG.md).
-
-## Desarrollo y validaciÃ³n
-
-Pruebas aisladas en Windows PowerShell 5.1 y PowerShell 7: `tests/security.tests.ps1`. Prueban registro simulado y archivos/ACL/enlaces reales exclusivamente dentro de fixtures descartables. El uso normal sigue utilizando PowerShell 5.1. Empaquetado reproducible: `python build/package.py DESTINO`.
-
-## Licencia y autor
-
-[MIT](LICENSE). Rodolfo AgustÃ­n GarcÃ­a ([@ragustingarcia](https://github.com/ragustingarcia)) â€” [ragustingarcia.com](https://ragustingarcia.com/).
+Autor: Rodolfo Agustin Garcia - https://ragustingarcia.com/.

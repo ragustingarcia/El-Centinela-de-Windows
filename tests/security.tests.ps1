@@ -63,12 +63,12 @@ try {
  $export=Join-Path $fixture 'report.json';Export-Report ([pscustomobject]@{Status='Partial';Value='fixture'}) $export
  Assert ((Get-Content -LiteralPath $export -Raw|ConvertFrom-Json).Status -eq 'Partial') 'Report JSON preserves result'
  Reject {Export-Report ([pscustomobject]@{Value='overwrite'}) $export} 'Report refuses overwrite'
- foreach($command in @('Get-CimInstance','Get-MpComputerStatus','Get-NetFirewallProfile','Get-NetTCPConnection','Get-ScheduledTask','Get-AppxPackage')) {
+ foreach($command in @('Get-CimInstance','Get-MpComputerStatus','Get-NetFirewallProfile','Get-NetTCPConnection','Get-ScheduledTask','Get-AppxPackage','Get-AntivirusHealth')) {
   Set-Item ('Function:\'+$command) { [pscustomobject]@{Name='fixture';StartMode='Auto';Actions=@()} }
  }
  # The registry reader is mocked; the optional Run key is queried read-only.
  $report=Get-SecurityReport
- Assert ($report.Checks.Count -eq 10 -and $report.Gaps.Count -gt 0) 'Report carries catalogue and coverage limits'
+ Assert ($report.Checks.Count -eq 11 -and $report.Gaps.Count -gt 0) 'Report carries catalogue and coverage limits'
  function Get-MpComputerStatus {throw 'fixture denied'}
  $report=Get-SecurityReport
  Assert (@($report.Checks|Where-Object { $_.Id -eq 'Defender' -and $_.Status -eq 'Unavailable' }).Count -eq 1) 'Report propagates failed security check'

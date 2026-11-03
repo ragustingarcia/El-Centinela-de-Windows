@@ -1,6 +1,6 @@
 ﻿param([switch]$LibraryOnly, [switch]$Audit, [string]$ReportPath)
 $ErrorActionPreference = 'Stop'
-$script:Version = '0.2.0-rc.2'
+$script:Version = '0.3.0-rc.1'
 $script:PrivacyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
 $script:PrivacyNames = @('SubscribedContent-338388Enabled','SubscribedContent-338389Enabled','SubscribedContent-353698Enabled','SystemPaneSuggestionsEnabled','SilentInstalledAppsEnabled','PreInstalledAppsEnabled','OemPreInstalledAppsEnabled','RotatingLockScreenOverlayEnabled','SoftLandingEnabled')
 function Confirm-Choice($Question) {
@@ -167,6 +167,7 @@ function Get-SecurityReport {
         Invoke-Check 'Windows' { Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 15 | Select-Object Caption,Version,BuildNumber,LastBootUpTime }
         Invoke-Check 'Defender' { Get-MpComputerStatus | Select-Object AntivirusEnabled,RealTimeProtectionEnabled,AMRunningMode,IsTamperProtected,AntivirusSignatureLastUpdated,QuickScanEndTime }
         Invoke-Check 'AntivirusProviders' { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -OperationTimeoutSec 15 | Select-Object displayName,productState }
+        Invoke-Check 'AntivirusHealth' { Get-AntivirusHealth }
         Invoke-Check 'Firewall' { Get-NetFirewallProfile -PolicyStore ActiveStore | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction }
         Invoke-Check 'ListeningTCP' { Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess }
         Invoke-Check 'RunCurrentUser' { if(Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'){Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' | Select-Object * -ExcludeProperty PS*} }
@@ -175,7 +176,7 @@ function Get-SecurityReport {
         Invoke-Check 'Apps' { Get-AppxPackage | Select-Object Name,Publisher,PackageFamilyName }
         Invoke-Check 'Privacy' { foreach($n in $script:PrivacyNames){ [pscustomobject]@{Name=$n;Value=(Read-PrivacyValue $n)} } }
     )
-    return Add-ReportAnalysis ([pscustomobject]@{ Schema=1; Version=$script:Version; Created=[DateTime]::UtcNow.ToString('o'); Sid=(Get-Identity); Checks=$checks; Gaps=@('No comprueba exposicion desde Internet, router, VPN ni compromiso desconocido.','No valida cobertura ESU/LTSC ni todas las actualizaciones/CVE.','No incluye motor IOC de Zero-Breach en esta version.','Escuchas TCP no implican accesibilidad externa. Proveedores AV no certifican salud efectiva.','No es una sandbox de red: las consultas de Windows pueden tener actividad de red del sistema.') })
+    return Add-ReportAnalysis ([pscustomobject]@{ Schema=1; Version=$script:Version; Created=[DateTime]::UtcNow.ToString('o'); Sid=(Get-Identity); Checks=$checks; Gaps=@('La cobertura avanzada aparece como pendiente hasta ejecutar sus comprobaciones en la opcion 8.','Las pruebas externas importadas cubren solo la IP, puertos y fecha indicados.','El analisis IOC busca indicadores conocidos; no garantiza ausencia de compromiso.','La correlacion CVE se limita a KB pendientes y boletines Microsoft consultados, no todas las aplicaciones.') })
 }
 function Export-Report($Report,[string]$Path) {
     Test-LocalPath $Path | Out-Null
@@ -183,6 +184,7 @@ function Export-Report($Report,[string]$Path) {
     try { $bytes=[Text.Encoding]::UTF8.GetBytes(($Report|ConvertTo-Json -Depth 10));$stream.Write($bytes,0,$bytes.Length) } finally { $stream.Dispose() }
 }
 . (Join-Path $PSScriptRoot 'Summary.ps1')
+. (Join-Path $PSScriptRoot 'DeepSecurity.ps1')
 if ($LibraryOnly) { return }
 if ($Audit) {
     $report=Get-SecurityReport; Show-Report $report
@@ -232,6 +234,7 @@ while ($true) {
                 if(Confirm-Choice 'Exportar al Escritorio?'){Write-Host (Export-DesktopReport $script:LastReport)}
             }
             '6' {if($script:LastReport){Show-Details $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
+            '8' {if($script:LastReport){Show-DeepMenu $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
             '7' {if($script:LastReport){Show-Solutions $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
         }
     } catch { Write-Warning $_.Exception.Message }

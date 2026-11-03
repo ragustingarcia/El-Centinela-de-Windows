@@ -12,7 +12,7 @@ function New-Fixture {
 }
 $r=Add-ReportAnalysis (New-Fixture)
 Assert ($r.Analysis.Alerts -eq 0 -and $r.Analysis.OK -eq 4) 'Healthy evidence produces favorable summary'
-Assert ($r.Analysis.Review -eq 0) 'Loopback is not external exposure'
+Assert (@($r.Analysis.Findings|Where-Object Title -like 'Servicios escuchando*').Count -eq 0) 'Loopback is not external exposure'
 $r.Checks[0].Data[0].RealTimeProtectionEnabled=$false;$r=Add-ReportAnalysis $r
 Assert (@($r.Analysis.Findings|Where-Object Action -eq EnableRealtime).Count -eq 1) 'Disabled protection proposes typed solution'
 $r.Checks[0].Data[0].AMRunningMode='Passive';$r=Add-ReportAnalysis $r
@@ -26,7 +26,7 @@ Assert (@($r.Analysis.Findings|Where-Object { $_.Level -eq 'Alert' -and $_.Title
 $r.Checks[2].Data[0].LocalAddress='0.0.0.0';$r=Add-ReportAnalysis $r
 Assert (@($r.Analysis.Findings|Where-Object Title -like 'Servicios escuchando*').Count -eq 1) 'Network listener produces contextual review'
 $r.Checks[0].Status='Unavailable';$r.Checks[0]|Add-Member Error 'denied';$r=Add-ReportAnalysis $r
-Assert ($r.Analysis.Unknown -eq 1) 'Unavailable check remains unknown'
+Assert ($r.Analysis.Unknown -eq 8) 'Unavailable check remains unknown'
 $r|Add-Member ActionHistory @([pscustomobject]@{Action='QuickScan';Status='Requested';Detail='Pending completion'})
 $text=Get-ReportText $r
 Assert ($text.Contains('coverage gap') -and $text.Contains('denied') -and $text.Contains('Pending completion')) 'Summary includes gaps failures and action results'
@@ -38,7 +38,7 @@ try {
     $folder=Export-DesktopReport $r
     Assert (Test-Path -LiteralPath (Join-Path $folder 'Resumen.txt')) 'Desktop export includes readable text'
     $saved=Get-Content -LiteralPath (Join-Path $folder 'Diagnostico.json') -Raw|ConvertFrom-Json
-    Assert ((Convert-ObservedDate $saved.Created) -eq (Convert-ObservedDate $r.Created) -and $saved.Analysis.Unknown -eq 1) 'Export uses cached analyzed snapshot'
+    Assert ((Convert-ObservedDate $saved.Created) -eq (Convert-ObservedDate $r.Created) -and $saved.Analysis.Unknown -eq 8) 'Export uses cached analyzed snapshot'
     Assert ($saved.ActionHistory[0].Status -eq 'Requested') 'Export retains action verification status'
     $second=Export-DesktopReport $r
     Assert ($second -ne $folder) 'Exports never overwrite previous snapshot'
@@ -85,6 +85,13 @@ function Confirm-Choice {param($Question) return $false}
 $cancel=New-Fixture;$cancel.Checks[0].Data[0].RealTimeProtectionEnabled=$false;$cancel=Add-ReportAnalysis $cancel
 Show-Solutions $cancel
 Assert ($script:called -eq 0) 'Cancelled proposal performs no action'
+function Confirm-Choice {param($Question) return $true}
+function Test-IsAdmin {return $false}
+$script:elevatedAction=$null
+function Invoke-ElevatedSecurity {param($Action,$Arguments) $script:elevatedAction=$Action;[pscustomobject]@{Action=$Action;Status='Verified';Detail='mock verified'}}
+Show-Solutions $cancel
+Assert ($script:elevatedAction -eq 'EnableRealtime') 'Approved correction delegates typed elevation instead of manual dead end'
+Assert ($cancel.ActionHistory[0].Status -eq 'Verified') 'Elevated result retained in exportable action history'
 $summary=[pscustomobject]@{Engine=$PSVersionTable.PSVersion.ToString();Passed=$script:passed;Boundary='Synthetic reports and mocked Defender commands; isolated desktop export fixture. No real security changes.'}
 if($ResultPath){$summary|ConvertTo-Json|Set-Content -LiteralPath $ResultPath -Encoding UTF8}
 $summary|Format-List

@@ -14,14 +14,19 @@ jobs:
         run: |
           & ./tests/security.tests.ps1
           & ./tests/summary.tests.ps1
+          & ./tests/deep.tests.ps1
       - name: PowerShell 7 isolated checks
         shell: pwsh
         run: |
           & ./tests/security.tests.ps1
           & ./tests/summary.tests.ps1
+          & ./tests/deep.tests.ps1
       - name: Reproducible release archive
         shell: pwsh
         run: |
           python build/package.py package-a
           python build/package.py package-b
           if ((Get-FileHash package-a/*.zip).Hash -ne (Get-FileHash package-b/*.zip).Hash) { throw 'Non-reproducible archive' }
+      - name: Native worker and reversible firewall integration (disposable runner only)
+        shell: pwsh
+        run: '& ./tests/worker.integration.ps1'
