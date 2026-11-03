@@ -71,6 +71,23 @@ Assert ($cves.Matches.Count -eq 1 -and $cves.Matches[0].KB -eq '5126653' -and $c
 function Invoke-WebRequest {param($Uri,$Headers,[switch]$UseBasicParsing,$TimeoutSec,$ErrorAction) throw 'fixture source unavailable'}
 $cves=Get-CveCorrelation $cveReport
 Assert ($cves.Gaps.Count -eq 3 -and $cves.Sources.Count -eq 0) 'Failed CVRF sources preserved as coverage gaps'
+$script:publicResult='success';$script:checkHostCalls=0;$script:consent=$true
+function Confirm-Choice {param($Question) return $script:consent}
+function Invoke-RestMethod {param($Uri,$Headers,$TimeoutSec,$ErrorAction)
+    if($Uri -like '*ipify*'){return [pscustomobject]@{ip='8.8.8.8'}}
+    if($Uri -like '*/check-tcp*'){$script:checkHostCalls++;return [pscustomobject]@{ok=1;request_id='abc123';nodes=[pscustomobject]@{fixture=@('test')}}}
+    if($script:publicResult -eq 'success'){return [pscustomobject]@{fixture=@([pscustomobject]@{time=0;address='8.8.8.8'})}}
+    if($script:publicResult -eq 'wrong'){return [pscustomobject]@{fixture=@([pscustomobject]@{time=0.1;address='1.1.1.1'})}}
+    return [pscustomobject]@{fixture=@([pscustomobject]@{error='fixture timeout'})}
+}
+Assert ((Get-PublicProbe 5000 '4').Status -eq 'Reachable') 'External provider positive evidence accepted including zero-time response'
+$script:publicResult='wrong'
+Assert ((Get-PublicProbe 5000 '4').Status -eq 'Unknown') 'External response for wrong address never proves exposure'
+$script:publicResult='error'
+Assert ((Get-PublicProbe 5000 '4').Status -eq 'NoConnection') 'External timeout is not a clean security verdict'
+$script:consent=$false;$script:checkHostCalls=0
+Reject {Get-PublicProbe 5000 '4'} 'External target submission requires explicit ownership consent'
+Assert ($script:checkHostCalls -eq 0) 'Cancelled public test never contacts checker'
 $fixture=Join-Path $PSScriptRoot ('deep-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $fixture|Out-Null
 try{
     $external=Join-Path $fixture 'external.json'

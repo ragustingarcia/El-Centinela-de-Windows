@@ -176,7 +176,7 @@ function Get-SecurityReport($PreviousReport) {
         Invoke-Check 'Apps' { Get-AppxPackage | Select-Object Name,Publisher,PackageFamilyName }
         Invoke-Check 'Privacy' { foreach($n in $script:PrivacyNames){ [pscustomobject]@{Name=$n;Value=(Read-PrivacyValue $n)} } }
     )
-    if($PreviousReport){$checks+=@($PreviousReport.Checks|Where-Object {$_.Id -in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe')})}
+    if($PreviousReport){$checks+=@($PreviousReport.Checks|Where-Object {$_.Id -in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe','PublicProbe')})}
     $report=[pscustomobject]@{ Schema=1; Version=$script:Version; Created=[DateTime]::UtcNow.ToString('o'); Sid=(Get-Identity); Checks=$checks; Gaps=@('La cobertura avanzada aparece como pendiente hasta ejecutar sus comprobaciones en la opcion 8.','Las pruebas externas importadas cubren solo la IP, puertos y fecha indicados.','El analisis IOC busca indicadores conocidos; no garantiza ausencia de compromiso.','La correlacion CVE se limita a KB pendientes y boletines Microsoft consultados, no todas las aplicaciones.') }
     if($PreviousReport -and $PreviousReport.PSObject.Properties['ActionHistory']){$report|Add-Member -MemberType NoteProperty -Name ActionHistory -Value @($PreviousReport.ActionHistory)}
     return Add-ReportAnalysis $report

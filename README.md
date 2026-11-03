@@ -31,3 +31,5 @@ Informes y artefactos IOC contienen datos privados; el Escritorio puede sincroni
 Es prerelease. Ver docs/SECURITY-CANDIDATE.md para pruebas y pendientes. No garantiza ausencia de compromiso. Incluye MIT para Centinela; el motor tercero conserva Apache-2.0 y sus conjuntos de indicadores mantienen sus propias condiciones.
 
 Autor: Rodolfo Agustin Garcia - https://ragustingarcia.com/.
+
+La opcion 8 > 10 ofrece una prueba externa voluntaria sin servidor propio: IPify obtiene la IP de salida de la familia elegida y Check-Host prueba un puerto desde un nodo externo. Pide confirmar control/autorizacion de esa IP; no usar salidas VPN/corporativas ajenas. Estos terceros reciben IP/puerto y el reporte puede quedar publicado en el proveedor. Se guarda el enlace, nodo, fecha y alcance; no prueba que la respuesta corresponda a esta PC en vez de otro equipo tras NAT. Nunca se activa sin consentimiento. Alternativa sin estos proveedores: script externo portable e importacion.

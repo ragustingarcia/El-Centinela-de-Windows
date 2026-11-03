@@ -26,7 +26,7 @@ Assert (@($r.Analysis.Findings|Where-Object { $_.Level -eq 'Alert' -and $_.Title
 $r.Checks[2].Data[0].LocalAddress='0.0.0.0';$r=Add-ReportAnalysis $r
 Assert (@($r.Analysis.Findings|Where-Object Title -like 'Servicios escuchando*').Count -eq 1) 'Network listener produces contextual review'
 $r.Checks[0].Status='Unavailable';$r.Checks[0]|Add-Member Error 'denied';$r=Add-ReportAnalysis $r
-Assert ($r.Analysis.Unknown -eq 8) 'Unavailable check remains unknown'
+Assert ($r.Analysis.Unknown -eq 9) 'Unavailable check remains unknown'
 $r|Add-Member ActionHistory @([pscustomobject]@{Action='QuickScan';Status='Requested';Detail='Pending completion'})
 $text=Get-ReportText $r
 Assert ($text.Contains('coverage gap') -and $text.Contains('denied') -and $text.Contains('Pending completion')) 'Summary includes gaps failures and action results'
@@ -38,7 +38,7 @@ try {
     $folder=Export-DesktopReport $r
     Assert (Test-Path -LiteralPath (Join-Path $folder 'Resumen.txt')) 'Desktop export includes readable text'
     $saved=Get-Content -LiteralPath (Join-Path $folder 'Diagnostico.json') -Raw|ConvertFrom-Json
-    Assert ((Convert-ObservedDate $saved.Created) -eq (Convert-ObservedDate $r.Created) -and $saved.Analysis.Unknown -eq 8) 'Export uses cached analyzed snapshot'
+    Assert ((Convert-ObservedDate $saved.Created) -eq (Convert-ObservedDate $r.Created) -and $saved.Analysis.Unknown -eq 9) 'Export uses cached analyzed snapshot'
     Assert ($saved.ActionHistory[0].Status -eq 'Requested') 'Export retains action verification status'
     $second=Export-DesktopReport $r
     Assert ($second -ne $folder) 'Exports never overwrite previous snapshot'

@@ -19,7 +19,7 @@ function Get-NetworkInvestigation {
     $processes=@{};foreach($p in Get-CimInstance Win32_Process -OperationTimeoutSec 15){$processes[[int]$p.ProcessId]=$p}
     $listeners=foreach($l in Get-NetTCPConnection -State Listen -ErrorAction Stop){
         $p=$processes[[int]$l.OwningProcess]
-        [pscustomobject]@{Address=$l.LocalAddress;Port=$l.LocalPort;ProcessId=$l.OwningProcess;Process=$p.Name;Executable=$p.ExecutablePath;Scope=$(if($l.LocalAddress -eq '::1' -or $l.LocalAddress -match '^127\.'){ 'Loopback' }else{'Network'});CanBlock=($l.OwningProcess -gt 4 -and $l.LocalPort -notin @(135,139,445,3389,5985,5986) -and [bool]$p.ExecutablePath)}
+        [pscustomobject]@{Address=$l.LocalAddress;Port=$l.LocalPort;ProcessId=$l.OwningProcess;Process=$p.Name;Executable=$p.ExecutablePath;Scope=$(if($l.LocalAddress -eq '::1' -or $l.LocalAddress -match '^127\.'){ 'Loopback' }else{'Network'});CanBlock=($l.OwningProcess -gt 4 -and $l.LocalPort -notin @(135,139,445,3389,5985,5986) -and [bool]$p.ExecutablePath -and -not $p.ExecutablePath.StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase))}
     }
     $rules=@(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Enabled True -ErrorAction Stop)
     if($rules.Count -gt 1000){throw 'Mas de 1000 reglas; investigacion cancelada para no presentar cobertura incompleta como completa.'}
@@ -138,7 +138,7 @@ function Show-NetworkInvestigation {
     $portText=Read-Host 'Puerto a bloquear (Enter solo investigar)';$port=0
     if(-not $portText){return $network}
     if(-not [int]::TryParse($portText,[ref]$port)){throw 'Puerto invalido.'}
-    $matches=@($network.Listeners|Where-Object { $_.Port -eq $port -and $_.Scope -eq 'Network' -and $_.CanBlock })
+    $matches=@($network.Listeners|Where-Object { $_.Port -eq $port -and $_.Scope -eq 'Network' -and $_.CanBlock }|Sort-Object ProcessId,Executable -Unique)
     if($matches.Count -ne 1){throw 'Se requiere una escucha unica identificada; no se elige un proceso ambiguo.'}
     $entry=$matches[0];Write-Host "$($entry.Process) - $($entry.Executable) - TCP $port"
     if(Confirm-Choice 'Crear regla reversible de bloqueo entrante?'){
@@ -165,6 +165,7 @@ function Show-DeepMenu($Report) {
     Write-Host '[7] Instalar parches de seguridad previamente consultados'
     Write-Host '[8] Importar prueba ejecutada desde otra red'
     Write-Host '[9] Correlacion CVE/KB con Microsoft MSRC (online)'
+    Write-Host '[10] Prueba externa voluntaria sin servidor propio (Check-Host)'
     $choice=Read-Host 'Comprobacion (Enter vuelve)'
     switch($choice){
         '1' {Add-DeepResult $Report 'NetworkInvestigation' {Show-NetworkInvestigation}}
@@ -172,6 +173,14 @@ function Show-DeepMenu($Report) {
         '3' {if(Confirm-Choice 'Consultar Windows Update por red? No instala ni reinicia.'){Add-DeepResult $Report 'Updates' {Get-PendingUpdates}}}
         '4' {if(Confirm-Choice 'Consultar tabla oficial de soporte por Internet?'){Add-DeepResult $Report 'Support' {Get-SupportAssessment}}}
         '9' {if(Confirm-Choice 'Consultar CVRF Microsoft de los ultimos 3 meses?'){Add-DeepResult $Report 'CVE' {Get-CveCorrelation $Report}}}
+        '10' {
+            Write-Host 'IPify recibira la consulta de IP publica; Check-Host recibira esa IP y el puerto, y puede conservar/publicar el reporte. No envia inventarios ni informes de la PC.'
+            $portText=Read-Host 'Un puerto TCP propio a comprobar';$port=0
+            $family=Read-Host 'Familia de salida a comprobar: 4 (IPv4) o 6 (IPv6)'
+            if([int]::TryParse($portText,[ref]$port) -and $port -ge 1 -and $port -le 65535 -and $family -in @('4','6') -and (Confirm-Choice 'Consultar servicios externos para esta prueba?')){
+                Add-DeepResult $Report 'PublicProbe' {Get-PublicProbe $port $family}
+            }
+        }
         '6' {Write-Host 'Lee artefactos privados locales y guarda resultados. UAC crea un bloqueo saliente temporal para Python y vuelve a pedir permiso para retirarlo. Si se interrumpe, revisar reglas Centinela-IOC en Firewall.';if(Confirm-Choice 'Ejecutar analisis IOC?'){Add-DeepResult $Report 'IOC' {Invoke-IocScan}}}
         '7' {
             $updates=@(Get-CheckData $Report 'Updates')
@@ -201,6 +210,40 @@ function Show-DeepMenu($Report) {
             }
         }
     }
+}
+function Get-PublicProbe([int]$Port,[ValidateSet('4','6')][string]$Family='4') {
+    if($Port -lt 1 -or $Port -gt 65535){throw 'Puerto invalido.'}
+    $lookup=if($Family -eq '6'){'https://api6.ipify.org?format=json'}else{'https://api.ipify.org?format=json'}
+    $observed=Invoke-RestMethod -Uri $lookup -TimeoutSec 15 -ErrorAction Stop
+    $ip=$null
+    if(-not [Net.IPAddress]::TryParse([string]$observed.ip,[ref]$ip)){throw 'IP publica no verificable.'}
+    $b=$ip.GetAddressBytes()
+    if([Net.IPAddress]::IsLoopback($ip) -or $ip.IsIPv6LinkLocal -or $ip.IsIPv6SiteLocal -or $ip.IsIPv6Multicast){throw 'Se requiere una IP publica.'}
+    if($b.Length -eq 4 -and ($b[0] -in @(0,10,127) -or $b[0] -ge 224 -or ($b[0] -eq 169 -and $b[1] -eq 254) -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127))){throw 'IP privada/compartida no valida para la prueba publica.'}
+    if($b.Length -eq 16 -and (($b[0] -band 254) -eq 252 -or $ip.IsIPv4MappedToIPv6)){throw 'Direccion IPv6 no global o mapeada; elegir la familia correcta.'}
+    Write-Host "La IP de salida observada es $ip; se comprobara TCP $Port desde un nodo externo."
+    if(-not (Confirm-Choice 'Confirmas que controlas/autorizas esa IP y que no es una salida VPN/corporativa/compartida ajena?')){throw 'Prueba externa cancelada antes de enviar el objetivo a Check-Host.'}
+    $hostTarget=if($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6){'['+$ip.ToString()+']:'+$Port}else{$ip.ToString()+':'+$Port}
+    $uri='https://check-host.net/check-tcp?host='+[uri]::EscapeDataString($hostTarget)+'&max_nodes=1'
+    $request=Invoke-RestMethod -Uri $uri -Headers @{Accept='application/json'} -TimeoutSec 15 -ErrorAction Stop
+    if($request.ok -ne 1 -or [string]$request.request_id -notmatch '^[a-fA-F0-9]{1,64}$'){throw 'El servicio externo no acepto una solicitud verificable.'}
+    $status='Pending';$nodes=@()
+    for($attempt=0;$attempt -lt 5;$attempt++){
+        $response=Invoke-RestMethod -Uri ('https://check-host.net/check-result/'+$request.request_id) -Headers @{Accept='application/json'} -TimeoutSec 12 -ErrorAction Stop
+        foreach($node in $response.PSObject.Properties){
+            if($null -eq $node.Value){continue}
+            foreach($value in @($node.Value)){
+                if($null -eq $value){continue}
+                if($value.PSObject.Properties['time'] -and ($value.time -is [double] -or $value.time -is [int] -or $value.time -is [long] -or $value.time -is [decimal]) -and $value.time -ge 0 -and -not [double]::IsNaN([double]$value.time) -and -not [double]::IsInfinity([double]$value.time)){
+                    $answer=$null
+                    if([Net.IPAddress]::TryParse([string]$value.address,[ref]$answer) -and $answer.Equals($ip)){$status='Reachable'}else{$status='Unknown'}
+                }elseif($value.PSObject.Properties['error']){$status='NoConnection'}else{$status='Unknown'}
+                $nodes+=[pscustomobject]@{Node=$node.Name;Result=$value}
+            }
+        }
+        if($status -ne 'Pending'){break};Start-Sleep -Seconds 1
+    }
+    [pscustomobject]@{Provider='Check-Host.net';Target=$ip.ToString();Family=$Family;Port=$Port;Status=$status;At=[datetime]::UtcNow.ToString('o');RequestId=$request.request_id;EvidenceLink=('https://check-host.net/check-report/'+$request.request_id);Nodes=$nodes;Scope='Un nodo externo, una IP/familia/puerto y fecha. Puede ser router/VPN/NAT u otro dispositivo; correlacionar con red local. NoConnection/Unknown/Pending no acreditan seguridad.'}
 }
 function Get-KnownPython {
     $base=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Python'

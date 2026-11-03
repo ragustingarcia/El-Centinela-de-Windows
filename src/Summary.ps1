@@ -61,8 +61,8 @@ function Get-ReportAnalysis($Report) {
     if($privacy.Count){$findings.Add((New-Finding 'Review' 'Preferencias de publicidad' ("$($privacy.Count) ajustes no estan explicitamente desactivados; ausencia no demuestra publicidad activa.") 'Privacy' 'Usar Reducir publicidad, con respaldo y deshacer.'))}
     $health=@(Get-CheckData $Report 'AntivirusHealth')
     if($health.Count){$findings.Add((New-Finding $(if($health[0].Code -eq 0){'OK'}else{'Review'}) 'Salud de proveedor antivirus' ([string]$health[0].Health) '' $health[0].Scope))}
-    foreach($id in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe')) {
-        $title=@{NetworkInvestigation='Red, procesos y puertos';Router='Router';Support='Soporte Windows y ESU/LTSC';Updates='Parches Windows';CVE='Correlacion CVE Microsoft';IOC='Indicadores de compromiso';ExternalProbe='Exposicion comprobada desde Internet'}[$id]
+    foreach($id in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe','PublicProbe')) {
+        $title=@{NetworkInvestigation='Red, procesos y puertos';Router='Router';Support='Soporte Windows y ESU/LTSC';Updates='Parches Windows';CVE='Correlacion CVE Microsoft';IOC='Indicadores de compromiso';ExternalProbe='Prueba externa importada';PublicProbe='Prueba externa mediante servicio'}[$id]
         $checks=@($Report.Checks|Where-Object Id -eq $id)
         if(-not $checks.Count){$findings.Add((New-Finding 'Unknown' $title 'Comprobacion avanzada pendiente.' 'DeepChecks' 'Ejecutar desde opcion 8; las consultas online requieren confirmacion.'))}
         elseif($checks[0].Status -eq 'Checked') {
@@ -76,6 +76,9 @@ function Get-ReportAnalysis($Report) {
                 foreach($caveat in $data[0].Caveats){$text=if($caveat.text){$caveat.text}else{[string]$caveat};$findings.Add((New-Finding 'Review' 'Alcance IOC' $text))}
                 if($data[0].ExitCode -eq 2){$findings.Add((New-Finding 'Alert' 'Indicadores IOC para investigar' 'El motor encontro coincidencias accionables; conservar evidencias y revisar contexto. No se borran automaticamente.'))}
                 if($data[0].ExitCode -eq 3){$findings.Add((New-Finding 'Unknown' 'Analisis IOC incompleto' 'Hay lagunas de cobertura; consultar el informe original.'))}
+            }
+            if($data.Count -and $id -eq 'PublicProbe'){
+                $findings.Add((New-Finding $(if($data[0].Status -in @('Pending','Unknown')){'Unknown'}else{'Review'}) 'Resultado externo TCP' ($data[0].Target+':'+$data[0].Port+' - '+$data[0].Status+' | '+$data[0].EvidenceLink) 'DeepChecks' $data[0].Scope))
             }
         }
     }
