@@ -68,7 +68,7 @@ try {
  }
  # The registry reader is mocked; the optional Run key is queried read-only.
  $report=Get-SecurityReport
- Assert ($report.Checks.Count -eq 11 -and $report.Gaps.Count -gt 0) 'Report carries catalogue and coverage limits'
+ Assert ($report.Checks.Count -eq 12 -and $report.Gaps.Count -gt 0) 'Report carries catalogue and coverage limits'
  function Get-MpComputerStatus {throw 'fixture denied'}
  $report=Get-SecurityReport
  Assert (@($report.Checks|Where-Object { $_.Id -eq 'Defender' -and $_.Status -eq 'Unavailable' }).Count -eq 1) 'Report propagates failed security check'
