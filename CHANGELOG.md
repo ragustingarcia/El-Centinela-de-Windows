@@ -10,6 +10,13 @@
 - Nueva comprobacion de UAC y aviso cuando se ejecuta como administrador.
 - Deteccion de compilaciones Insider; un 404 del mes en curso de MSRC ya no cuenta como hueco.
 - Exportaciones con contrasenas/tokens redactados.
+- Ayudante elevado endurecido: se calculan los SHA256 de sus 4 scripts antes de pedir UAC; el proceso elevado
+  (via -EncodedCommand, sin -File ni Bypass sobre la carpeta del usuario) vuelve a verificarlos, los copia a
+  %ProgramData%\Centinela\worker con permisos solo para Administradores/SYSTEM y corre desde ahi. El worker
+  re-verifica ubicacion, hashes y ACL al iniciar y se niega si algo no coincide.
+- Resultado del ayudante: se escribe en la carpeta protegida y se valida (ruta, tamano max. 2 MB, propietario,
+  esquema, Id y accion) antes de usarlo; nunca se ejecuta.
+- Nuevas pruebas tests/worker.tests.ps1 y tests/audit.tests.ps1 (tambien en CI).
 
 ## 0.3.0-rc.1
 
