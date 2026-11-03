@@ -28,6 +28,7 @@ function Get-StateFolder {return $PSScriptRoot}
 function Save-Journal {param($Journal,$Path) $script:journal++}
 function Get-NetFirewallRule {param($Name,$PolicyStore,$ErrorAction) [pscustomobject]@{Enabled='True';Action='Block'}}
 Reject {Block-VerifiedListener 3389 100 'C:\App\app.exe'} 'Remote administration port protected'
+Reject {Block-VerifiedListener 22 100 'C:\App\app.exe'} 'SSH administration port protected'
 Reject {Block-VerifiedListener 5000 4 'C:\App\app.exe'} 'System process protected'
 Reject {Block-VerifiedListener 5000 100 'C:\Changed.exe'} 'Changed program rejected'
 Assert ($script:rules -eq 0) 'No writes for rejected selection'

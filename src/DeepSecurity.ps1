@@ -19,7 +19,7 @@ function Get-NetworkInvestigation {
     $processes=@{};foreach($p in Get-CimInstance Win32_Process -OperationTimeoutSec 15){$processes[[int]$p.ProcessId]=$p}
     $listeners=foreach($l in Get-NetTCPConnection -State Listen -ErrorAction Stop){
         $p=$processes[[int]$l.OwningProcess]
-        [pscustomobject]@{Address=$l.LocalAddress;Port=$l.LocalPort;ProcessId=$l.OwningProcess;Process=$p.Name;Executable=$p.ExecutablePath;Scope=$(if($l.LocalAddress -eq '::1' -or $l.LocalAddress -match '^127\.'){ 'Loopback' }else{'Network'});CanBlock=($l.OwningProcess -gt 4 -and $l.LocalPort -notin @(135,139,445,3389,5985,5986) -and [bool]$p.ExecutablePath -and -not $p.ExecutablePath.StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase))}
+        [pscustomobject]@{Address=$l.LocalAddress;Port=$l.LocalPort;ProcessId=$l.OwningProcess;Process=$p.Name;Executable=$p.ExecutablePath;Scope=$(if($l.LocalAddress -eq '::1' -or $l.LocalAddress -match '^127\.'){ 'Loopback' }else{'Network'});CanBlock=($l.OwningProcess -gt 4 -and $l.LocalPort -notin @(22,135,139,445,3389,5900,5938,5985,5986) -and [bool]$p.ExecutablePath -and -not $p.ExecutablePath.StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase))}
     }
     $rules=@(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Enabled True -ErrorAction Stop)
     if($rules.Count -gt 1000){throw 'Mas de 1000 reglas; investigacion cancelada para no presentar cobertura incompleta como completa.'}
@@ -103,7 +103,7 @@ function Get-CveCorrelation($Report) {
 }
 function Block-VerifiedListener([int]$Port,[int]$ProcessId,[string]$ExpectedProgram) {
     if(-not (Test-IsAdmin)){throw 'Requiere administrador para crear una regla de firewall.'}
-    if($ProcessId -le 4 -or $Port -lt 1 -or $Port -gt 65535 -or $Port -in @(135,139,445,3389,5985,5986)){throw 'Servicio del sistema/administracion protegido; requiere evaluacion especifica.'}
+    if($ProcessId -le 4 -or $Port -lt 1 -or $Port -gt 65535 -or $Port -in @(22,135,139,445,3389,5900,5938,5985,5986)){throw 'Servicio del sistema/administracion protegido; requiere evaluacion especifica.'}
     $p=Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -OperationTimeoutSec 15
     if(-not $p.ExecutablePath -or $p.ExecutablePath -ne $ExpectedProgram){throw 'El proceso o su ejecutable cambiaron; repetir investigacion.'}
     Test-LocalPath $p.ExecutablePath|Out-Null
