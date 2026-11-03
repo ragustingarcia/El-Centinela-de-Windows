@@ -1,649 +1,239 @@
-﻿param([switch]$LibraryOnly)
-
-# ============================================================
-#   EL CENTINELA DE WINDOWS
-#   Limpiador y optimizador: arranque, Defender, privacidad
-#   y programas innecesarios. Re-ejecutable, no destructivo
-#   por defecto (siempre pregunta antes de tocar algo).
-# ============================================================
-
-function Write-OK      { param($msg) Write-Host "  [OK] $msg" -ForegroundColor Green }
-function Write-Err     { param($msg) Write-Host "  [X] $msg" -ForegroundColor Red }
-function Write-Warn    { param($msg) Write-Host "  [!] $msg" -ForegroundColor Yellow }
-function Write-Info    { param($msg) Write-Host "  $msg" -ForegroundColor Cyan }
-function Write-Section { param($msg) Write-Host $msg -ForegroundColor Yellow }
-
-function Write-Titulo { param($msg)
-    Write-Host ""
-    Write-Section "============================================================"
-    Write-Section "  $msg"
-    Write-Section "============================================================"
-    Write-Host ""
+﻿param([switch]$LibraryOnly, [switch]$Audit, [string]$ReportPath)
+$ErrorActionPreference = 'Stop'
+$script:Version = '0.2.0-rc.1'
+$script:PrivacyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+$script:PrivacyNames = @('SubscribedContent-338388Enabled','SubscribedContent-338389Enabled','SubscribedContent-353698Enabled','SystemPaneSuggestionsEnabled','SilentInstalledAppsEnabled','PreInstalledAppsEnabled','OemPreInstalledAppsEnabled','RotatingLockScreenOverlayEnabled','SoftLandingEnabled')
+function Confirm-Choice($Question) {
+    $answer = Read-Host "$Question (s/N)"
+    return ($null -ne $answer -and $answer.Trim() -match '^(?i:s|si|sí)$')
 }
-
-function Ask-SN { param($pregunta)
-    if ($Global:ModoSoloLectura -or -not $script:ChangesEnabled) {
-        Write-Host "  (modo reporte: no se modifica nada)" -ForegroundColor DarkGray
-        return $false
+function Get-Identity {
+    return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+function Test-LocalPath([string]$Path) {
+    if (-not [IO.Path]::IsPathRooted($Path) -or $Path.StartsWith('\\') -or $Path -match '^[^:]+::') { throw 'Ruta no local o no absoluta.' }
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full -ne $Path.TrimEnd('\')) { throw 'Ruta no canonica.' }
+    $drive = New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($full))
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) { throw 'Se requiere una unidad local fija.' }
+    $current = $full
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Ruta redirigida: $current" }
+        }
+        $parent = Split-Path -Path $current -Parent
+        if ($parent -eq $current) { break }; $current = $parent
     }
-    $r = Read-Host "  $pregunta (s/N)"
-    return ($null -ne $r -and $r.Trim() -match "^(?i:s|si|sí)$")
+    return $full
 }
-
-function Test-Sig($path) {
-    if (-not $path) { return "N/A" }
-    if (-not (Test-Path -LiteralPath $path)) { return "ARCHIVO NO EXISTE" }
+function Get-StateFolder {
+    $base = [Environment]::GetFolderPath('LocalApplicationData')
+    $folder = Join-Path $base 'Centinela\State'
+    Test-LocalPath $folder | Out-Null
+    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+    Test-LocalPath $folder | Out-Null
+    Protect-StateFolder $folder
+    return $folder
+}
+function Protect-StateFolder([string]$folder) {
+    Test-LocalPath $folder | Out-Null
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true,$false)
+    foreach ($sid in @((Get-Identity),'S-1-5-18')) {
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule ((New-Object Security.Principal.SecurityIdentifier $sid),'FullControl','ContainerInherit,ObjectInherit','None','Allow')
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $folder -AclObject $acl
+}
+function Save-Journal($Journal,[string]$Path) {
+    Test-LocalPath $Path | Out-Null
+    $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
     try {
-        $s = Get-AuthenticodeSignature -LiteralPath $path -ErrorAction Stop
-        if ($s.Status -eq "Valid") {
-            $subject = $s.SignerCertificate.Subject
-            $nombre = if ($subject -match 'CN="([^"]+)"') { $matches[1] } elseif ($subject -match 'CN=([^,]+)') { $matches[1] } else { $subject }
-            return "OK ($nombre)"
-        }
-        else { return "SIN FIRMA VALIDA ($($s.Status))" }
-    } catch { return "error de firma" }
+        $Journal | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $tmp -Encoding UTF8
+        Move-Item -LiteralPath $tmp -Destination $Path -Force
+    } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force } }
 }
-
-# Extrae la ruta de un ejecutable de un valor de Run/servicio/tarea que puede
-# venir sin comillas y con espacios en el path (ej: "C:\Program Files\X\y.exe arg").
-# Prueba cada ocurrencia de ".exe" de izquierda a derecha hasta encontrar una
-# que sea un archivo real - mas confiable que un regex unico.
-function Extract-Path($cmd) {
-    if (-not $cmd) { return $null }
-    if ($cmd -match '^"([^"]+)"') { return $matches[1] }
-    $idx = 0
-    while (($idx = $cmd.IndexOf(".exe", $idx, [StringComparison]::OrdinalIgnoreCase)) -ge 0) {
-        $candidate = $cmd.Substring(0, $idx + 4)
-        if (Test-Path -LiteralPath $candidate) { return $candidate }
-        $idx += 4
-    }
-    if ($cmd -match '^(\S+\.exe)') { return $matches[1] }
-    return $cmd
+function Read-PrivacyValue($Name) {
+    if ($script:PrivacyNames -notcontains $Name) { throw 'Ajuste desconocido.' }
+    if (-not (Test-Path -LiteralPath $script:PrivacyPath)) { return $null }
+    $key = Get-Item -LiteralPath $script:PrivacyPath
+    if ($key.GetValueNames() -notcontains $Name) { return $null }
+    if ($key.GetValueKind($Name) -ne 'DWord') { throw "Tipo no soportado: $Name" }
+    return [int]$key.GetValue($Name)
 }
-
-function Get-DirSizeMB($path) {
-    if (-not (Test-Path -LiteralPath $path)) { return 0 }
-    $s = (Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
-    if (-not $s) { return 0 }
-    return [math]::Round($s / 1MB, 1)
-}
-
-# Borra el CONTENIDO de una carpeta (no la carpeta en si) sin frenar ante
-# archivos en uso: cada item se intenta por separado, los que fallan
-# (bloqueados por otro proceso) se cuentan y se saltean sin cortar el resto.
-function Remove-DirContents($path, $excluir = @()) {
-    $items = Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue | Where-Object { $excluir -notcontains $_.FullName }
-    $ok = 0; $fail = 0
-    foreach ($i in $items) {
-        try { Remove-Item -LiteralPath $i.FullName -Recurse -Force -ErrorAction Stop; $ok++ }
-        catch { $fail++ }
-    }
-    return [pscustomobject]@{ Ok = $ok; Fail = $fail }
-}
-
-# ============================================================
-#  CATEGORIA 1: ARRANQUE Y PERSISTENCIA
-# ============================================================
-function Invoke-AuditArranque {
-    Write-Titulo "ARRANQUE Y PERSISTENCIA"
-
-    Write-Info "Revisando Run / RunOnce..."
-    $runKeys = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
-        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
-    )
-    $hallazgos = @()
-    foreach ($rk in $runKeys) {
-        $props = Get-ItemProperty -Path $rk -ErrorAction SilentlyContinue
-        if ($props) {
-            $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
-                $p = Extract-Path $_.Value
-                $hallazgos += [pscustomobject]@{ Key = $rk; Name = $_.Name; Value = $_.Value; Path = $p; Sig = Test-Sig $p }
-            }
-        }
-    }
-    # Estas apps manejan su PROPIO interruptor de "iniciar con Windows" y se
-    # reescriben solas en el Run la proxima vez que las abras, sin importar
-    # que hayas borrado la clave a mano. Border la clave es un parche
-    # temporal - el arreglo real es apagarlo desde los Ajustes de la app.
-    $AutoRelanzadores = [ordered]@{
-        "Discord"       = "Discord > Configuracion de Usuario > Windows Settings > 'Abrir Discord automaticamente...'"
-        "Docker Desktop" = "Docker Desktop > Settings (engranaje) > General > 'Start Docker Desktop when you log in'"
-        "Steam"         = "Steam > Configuracion > Interfaz > 'Ejecutar Steam al iniciar Windows'"
-        "Spotify"       = "Spotify > Configuracion > 'Abrir Spotify automaticamente despues de iniciar sesion'"
-        "Slack"         = "Slack > Preferencias > Avanzado > 'Iniciar Slack automaticamente'"
-        "Zoom"          = "Zoom > Configuracion > General > 'Iniciar Zoom cuando se inicie Windows'"
-        "OneDrive"      = "OneDrive > Configuracion > 'Iniciar OneDrive automaticamente al iniciar sesion'"
-    }
-
-    if ($hallazgos.Count -eq 0) { Write-OK "Sin entradas en Run/RunOnce." }
-    foreach ($h in $hallazgos) {
-        Write-Host ""
-        Write-Host "  [$($h.Key)]"
-        Write-Host "    $($h.Name) = $($h.Value)"
-        if ($h.Sig -notmatch "^OK") { Write-Warn "Firma: $($h.Sig)" } else { Write-Host "    Firma: $($h.Sig)" -ForegroundColor DarkGray }
-        $hint = ($AutoRelanzadores.Keys | Where-Object { $h.Name -match [regex]::Escape($_) } | Select-Object -First 1)
-        if ($hint) { Write-Info "Tip: esta app se re-agrega SOLA si la volves a abrir. Para que no vuelva: $($AutoRelanzadores[$hint])" }
-        if (Ask-SN "Sacar del arranque?") {
-            try { Remove-ItemProperty -Path $h.Key -Name $h.Name -ErrorAction Stop; Write-OK "Eliminado." }
-            catch { Write-Err "No se pudo eliminar: $($_.Exception.Message)" }
-        }
-    }
-
-    Write-Host ""
-    Write-Info "Revisando carpetas de Startup..."
-    $sh = New-Object -ComObject WScript.Shell
-    $startupItems = @()
-    foreach ($folder in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp")) {
-        Get-ChildItem $folder -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in ".lnk", ".exe", ".bat", ".vbs", ".js" } | ForEach-Object {
-            $target = $_.FullName
-            if ($_.Extension -eq ".lnk") { try { $target = $sh.CreateShortcut($_.FullName).TargetPath } catch {} }
-            $startupItems += [pscustomobject]@{ File = $_.FullName; Target = $target; Sig = Test-Sig $target }
-        }
-    }
-    if ($startupItems.Count -eq 0) { Write-OK "Carpetas de Startup vacias." }
-    foreach ($it in $startupItems) {
-        Write-Host ""
-        Write-Host "  $($it.File)"
-        Write-Host "    Apunta a: $($it.Target)"
-        Write-Host "    Firma: $($it.Sig)"
-        if (Ask-SN "Sacar este acceso directo del arranque?") {
-            try { Remove-Item -LiteralPath $it.File -Force -ErrorAction Stop; Write-OK "Eliminado." }
-            catch { Write-Err "No se pudo eliminar: $($_.Exception.Message)" }
-        }
-    }
-
-    Write-Host ""
-    Write-Info "Puntos de secuestro clasicos (solo diagnostico, no se tocan automaticamente)..."
-    $winlogon = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -ErrorAction SilentlyContinue
-    if ($winlogon.Shell -eq "explorer.exe") { Write-OK "Winlogon Shell = explorer.exe" } else { Write-Err "Winlogon Shell = '$($winlogon.Shell)' (deberia ser explorer.exe)" }
-    if ($winlogon.Userinit -match "^C:\\Windows\\system32\\userinit\.exe,?$") { Write-OK "Winlogon Userinit correcto" } else { Write-Err "Winlogon Userinit = '$($winlogon.Userinit)' (revisar)" }
-    $winNT = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" -ErrorAction SilentlyContinue
-    if ([string]::IsNullOrWhiteSpace($winNT.AppInit_DLLs)) { Write-OK "AppInit_DLLs vacio" } else { Write-Err "AppInit_DLLs = '$($winNT.AppInit_DLLs)' (posible inyeccion de DLL)" }
-    $ifeo = Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options" -ErrorAction SilentlyContinue
-    $hijacks = foreach ($k in $ifeo) { $d = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue; if ($d.Debugger) { "$($k.PSChildName) -> $($d.Debugger)" } }
-    if ($hijacks) { Write-Err "IFEO Debugger hijacks encontrados:"; $hijacks | ForEach-Object { Write-Host "    $_" } } else { Write-OK "Sin IFEO Debugger hijacks" }
-    try {
-        $wmiCount = (Get-CimInstance -Namespace root/subscription -ClassName __EventFilter -ErrorAction Stop | Measure-Object).Count
-        if ($wmiCount -gt 0) { Write-Warn "$wmiCount suscripcion(es) WMI activa(s) - revisar con Get-CimInstance -Namespace root/subscription -ClassName __EventFilter" } else { Write-OK "Sin suscripciones WMI" }
-    } catch { Write-Info "No se pudo consultar suscripciones WMI." }
-
-    Write-Host ""
-    Write-Info "Tareas programadas no-Microsoft, habilitadas..."
-    $tareas = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskPath -notmatch "\\Microsoft\\" -and $_.State -ne "Disabled" }
-    if (-not $tareas) { Write-OK "Sin tareas no-Microsoft habilitadas." }
-    foreach ($t in $tareas) {
-        $execAction = $t.Actions | Where-Object { $_.Execute } | Select-Object -First 1
-        Write-Host ""
-        Write-Host "  $($t.TaskPath)$($t.TaskName)"
-        if ($execAction) {
-            $p = Extract-Path $execAction.Execute
-            Write-Host "    Accion: $($execAction.Execute) $($execAction.Arguments)"
-            Write-Host "    Firma: $(Test-Sig $p)"
-        } else {
-            Write-Host "    (Accion tipo COM Handler - normalmente un componente interno de Windows, no un programa instalado)"
-        }
-        if (Ask-SN "Deshabilitar esta tarea?") {
-            try { Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null; Write-OK "Deshabilitada." }
-            catch { Write-Err "No se pudo deshabilitar: $($_.Exception.Message)" }
-        }
-    }
-
-    Write-Host ""
-    Write-Info "Servicios de terceros con auto-inicio (diagnostico - cambialos a Manual desde services.msc si no los necesitas)..."
-    $servicios = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.StartMode -eq "Auto" -and $_.PathName -and $_.PathName -notmatch "\\Windows\\|\\system32\\" }
-    if (-not $servicios) { Write-OK "Sin servicios de terceros con auto-inicio fuera de la carpeta de Windows." }
-    foreach ($s in $servicios) {
-        $p = Extract-Path $s.PathName
-        Write-Host ""
-        Write-Host "  $($s.Name) [$($s.State)] - $($s.DisplayName)"
-        Write-Host "    Path: $($s.PathName)"
-        Write-Host "    Firma: $(Test-Sig $p)"
-    }
-}
-
-# ============================================================
-#  CATEGORIA 2: SEGURIDAD (WINDOWS DEFENDER)
-# ============================================================
-function Invoke-AuditSeguridad {
-    Write-Titulo "SEGURIDAD - WINDOWS DEFENDER"
-
-    try {
-        $mps = Get-MpComputerStatus -ErrorAction Stop
-        Write-Host "  Proteccion en tiempo real: $(if ($mps.RealTimeProtectionEnabled) { 'ACTIVA' } else { 'INACTIVA' })"
-        Write-Host "  Antivirus activo: $($mps.AntivirusEnabled)"
-        Write-Host "  Ultimo scan rapido: $($mps.QuickScanEndTime)"
-        Write-Host "  Ultimo scan completo: $($mps.FullScanEndTime)"
-        Write-Host "  Definiciones: $($mps.AntivirusSignatureVersion) ($($mps.AntivirusSignatureLastUpdated))"
-    } catch { Write-Warn "No se pudo leer el estado de Defender: $($_.Exception.Message)" }
-
-    Write-Host ""
-    Write-Info "Exclusiones configuradas..."
-    try {
-        $mp = Get-MpPreference -ErrorAction Stop
-        # Get-MpPreference sin admin NO tira excepcion: devuelve el string literal
-        # "N/A: Must be an administrator to view exclusions" como si fuera un valor
-        # real. Hay que filtrarlo explicitamente o el script lo confunde con datos.
-        $esPlaceholder = { param($v) $v -match "^N/A: Must be an administrator" }
-        if ((@($mp.ExclusionPath) + @($mp.ExclusionProcess) + @($mp.ExclusionExtension)) | Where-Object { & $esPlaceholder $_ }) {
-            Write-Warn "Exclusiones no disponibles para esta identidad. Consulta pendiente; no se infiere ausencia de exclusiones."
-        } else {
-            $rutas = @($mp.ExclusionPath | Where-Object { $_ })
-            if ($rutas.Count) {
-                Write-Warn "Exclusiones de rutas (literales, patrones o reglas contextuales):"
-                $rutas | ForEach-Object { Write-Host "    $_" }
-                Write-Info "La inexistencia aparente no demuestra que una exclusion sea inutil. Revisar en Seguridad de Windows."
-            } else { Write-Info "Sin exclusiones de ruta devueltas por esta consulta." }
-            if ($mp.ExclusionProcess) { Write-Warn "Procesos excluidos (revisar - la categoria mas sensible):"; $mp.ExclusionProcess | ForEach-Object { Write-Host "    $_" } } else { Write-OK "Sin procesos excluidos." }
-            if ($mp.ExclusionExtension) { Write-Warn "Extensiones excluidas (revisar):"; $mp.ExclusionExtension | ForEach-Object { Write-Host "    $_" } } else { Write-OK "Sin extensiones excluidas." }
-        }
-    } catch { Write-Warn "No se pudieron leer las exclusiones: $($_.Exception.Message)" }
-
-    if (-not $Global:ModoSoloLectura -and $script:ChangesEnabled) {
-        Write-Host ""
-        Write-Host "  Correr un scan de Defender ahora?"
-        Write-Host "    [1] Rapido"
-        Write-Host "    [2] Completo (puede tardar mas de una hora)"
-        Write-Host "    [3] No, gracias"
-        $op = Read-Host "  Elegi una opcion"
-        switch ($op) {
-            "1" { try { Start-MpScan -ScanType QuickScan -ErrorAction Stop; Write-Info "Solicitud de scan enviada. Consulta el resultado en Seguridad de Windows." } catch { Write-Err $_.Exception.Message } }
-            "2" { try { Start-MpScan -ScanType FullScan -ErrorAction Stop; Write-Info "Solicitud de scan enviada. Consulta el resultado en Seguridad de Windows." } catch { Write-Err $_.Exception.Message } }
-            default { Write-Info "Sin scan." }
-        }
-    }
-}
-
-# ============================================================
-#  CATEGORIA 3: PRIVACIDAD (SUGERENCIAS / PUBLICIDAD DE WINDOWS)
-# ============================================================
-function Invoke-AuditPrivacidad {
-    Write-Titulo "PRIVACIDAD - SUGERENCIAS Y PUBLICIDAD DE WINDOWS"
-    # $env:USERNAME puede venir HEREDADO del proceso padre y no reflejar la
-    # identidad real del token elevado - se usa la API de Windows en vez de
-    # confiar en la variable de entorno.
-    $identidad = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-    Write-Info "Identidad real del proceso: $($identidad.Name) (variable de entorno: $env:USERDOMAIN\$env:USERNAME)"
-    Write-Info "Perfil: $env:USERPROFILE"
-    Write-Info "SID: $($identidad.User.Value)"
-
-    $cdm = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
-    $keys = @(
-        "SubscribedContent-338388Enabled", "SubscribedContent-338389Enabled", "SubscribedContent-353698Enabled",
-        "SystemPaneSuggestionsEnabled", "SilentInstalledAppsEnabled", "PreInstalledAppsEnabled",
-        "OemPreInstalledAppsEnabled", "RotatingLockScreenEnabled", "RotatingLockScreenOverlayEnabled", "SoftLandingEnabled"
-    )
-    $actuales = Get-ItemProperty $cdm -ErrorAction SilentlyContinue
-    $activos = 0
-    foreach ($k in $keys) {
-        $v = $actuales.$k
-        if ($null -eq $v -or $v -eq 1) { $activos++; Write-Warn "$k = ACTIVO" } else { Write-Host "    $k = apagado" -ForegroundColor DarkGray }
-    }
-
-    # Estos toggles por-usuario son "blandos": Windows los puede resetear solo
-    # con el tiempo, tras una actualizacion, o si la cuenta que eleva el .bat
-    # no es la misma que los seteo. Las 4 politicas de HKLM de abajo son la
-    # version "pegajosa" (Group Policy) que Windows respeta como anulacion
-    # dura y aplica a TODOS los usuarios de la maquina, no a uno solo.
-    $gpo = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent"
-    $gpoKeys = [ordered]@{
-        "DisableWindowsConsumerFeatures"                = "Apps preinstaladas/instaladas en silencio"
-        "DisableSoftLanding"                             = "Motor SoftLanding (recomendaciones/tips)"
-        "DisableThirdPartySuggestions"                   = "Sugerencias de apps de terceros"
-        "DisableTailoredExperiencesWithDiagnosticData"   = "Contenido personalizado segun tus datos de diagnostico"
-    }
-    $gpoActuales = Get-ItemProperty $gpo -ErrorAction SilentlyContinue
-    $gpoFaltantes = @($gpoKeys.Keys | Where-Object { $gpoActuales.$_ -ne 1 })
-
-    Write-Host ""
-    if ($activos -eq 0 -and $gpoFaltantes.Count -eq 0) { Write-OK "Todo apagado, incluidas las politicas persistentes."; return }
-    if ($activos -gt 0) {
-        Write-Info "$activos de $($keys.Count) sugerencias/publicidad (config por-usuario) estan activas."
-    }
-    if ($gpoFaltantes.Count -gt 0) {
-        Write-Warn "$($gpoFaltantes.Count) de $($gpoKeys.Count) politicas persistentes NO estan activas - por esto Windows puede haber revertido una limpieza anterior."
+function Write-PrivacyValue($Name,$Value) {
+    if ($script:PrivacyNames -notcontains $Name) { throw 'Ajuste desconocido.' }
+    if ($null -eq $Value) {
+        if (Test-Path -LiteralPath $script:PrivacyPath) { Remove-ItemProperty -LiteralPath $script:PrivacyPath -Name $Name -ErrorAction Stop }
     } else {
-        Write-OK "Las 4 politicas persistentes ya estan activas."
+        if ($Value -isnot [int] -and $Value -isnot [long]) { throw 'Valor no entero.' }
+        if (-not (Test-Path -LiteralPath $script:PrivacyPath)) { New-Item -Path $script:PrivacyPath -Force | Out-Null }
+        New-ItemProperty -LiteralPath $script:PrivacyPath -Name $Name -Value $Value -PropertyType DWord -Force | Out-Null
     }
-    Write-Host "  Incluye: recomendaciones del menu Inicio, apps instaladas en silencio,"
-    Write-Host "  apps preinstaladas de OEM, y pantalla de bloqueo rotativa con overlay de tips."
-    if ($Global:ModoSoloLectura -or -not $script:ChangesEnabled) { return }
-    Write-Host ""
-    Write-Host "  [1] Apagar todo (recomendado - incluye las politicas persistentes)"
-    Write-Host "  [2] Apagar sugerencias/apps, mantener las fotos de Spotlight (sin overlay de tips)"
-    Write-Host "  [3] No tocar nada"
-    $op = Read-Host "  Elegi una opcion"
-    $toApply = @{}
-    switch ($op) {
-        "1" { foreach ($k in $keys) { $toApply[$k] = 0 } }
-        "2" { foreach ($k in $keys) { $toApply[$k] = 0 }; $toApply["RotatingLockScreenEnabled"] = 1 }
-        default { Write-Info "Sin cambios."; return }
+}
+function New-PrivacyPlan {
+    foreach ($name in $script:PrivacyNames) {
+        try {
+            $old = Read-PrivacyValue $name
+            if ($null -eq $old -or $old -ne 0) { [pscustomobject]@{ Name=$name; Before=$old; After=0; Status='Pending' } }
+        } catch { Write-Warning $_.Exception.Message }
     }
-    foreach ($k in $toApply.Keys) { New-ItemProperty -Path $cdm -Name $k -Value $toApply[$k] -PropertyType DWord -Force | Out-Null }
-    if (-not (Test-Path $gpo)) { New-Item -Path $gpo -Force | Out-Null }
-    foreach ($k in $gpoKeys.Keys) { New-ItemProperty -Path $gpo -Name $k -Value 1 -PropertyType DWord -Force | Out-Null }
-    Write-OK "Aplicado (config por-usuario + politicas persistentes). Puede requerir cerrar sesion para verse reflejado."
 }
-
-# ============================================================
-#  CATEGORIA 4: PROGRAMAS CONOCIDOS COMO INNECESARIOS
-# ============================================================
-# Confianza "Verificado" = probado en una maquina real durante esta sesion de limpieza.
-# Confianza "Publico" = documentado por la comunidad tecnica, NO probado en esta sesion.
-# Revisar=$true = tiene utilidad real para algunos; la pregunta se formula distinto.
-$BloatwareDB = @(
-    [pscustomobject]@{ Nombre = "Intel Computing Improvement Program"; Vendor = "Intel"; Confianza = "Verificado"; Tipo = "uninstall"; Patron = "Computing Improvement Program"; Desc = "Telemetria de uso de Intel, sin beneficio para el usuario."; Revisar = $false }
-    [pscustomobject]@{ Nombre = "Intel System Usage Report (QUEENCREEK)"; Vendor = "Intel"; Confianza = "Verificado"; Tipo = "service"; Patron = "QUEENCREEK"; Desc = "Servicios de telemetria de Intel en segundo plano."; Revisar = $false }
-    [pscustomobject]@{ Nombre = "AMD Dual-Core Optimizer"; Vendor = "AMD"; Confianza = "Verificado"; Tipo = "uninstall"; Patron = "Dual-Core Optimizer"; Desc = "Parche para CPUs AMD de ~2005-2008. Inutil en cualquier PC moderna sea cual sea la marca de CPU; suele colarse con instaladores de juegos viejos."; Revisar = $false }
-    [pscustomobject]@{ Nombre = "NVIDIA FrameView SDK"; Vendor = "NVIDIA"; Confianza = "Verificado"; Tipo = "uninstall"; Patron = "FrameView"; Desc = "Modulo de benchmark/telemetria de la NVIDIA App. No afecta drivers ni juegos."; Revisar = $false }
-
-    [pscustomobject]@{ Nombre = "Dell Digital Delivery"; Vendor = "Dell"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "Dell Digital Delivery"; Desc = "Entrega de software promocional preinstalado por Dell. Sin funcion tecnica."; Revisar = $false }
-    [pscustomobject]@{ Nombre = "Dell Customer Connect"; Vendor = "Dell"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "Dell Customer Connect"; Desc = "Marketing y encuestas de Dell."; Revisar = $false }
-    [pscustomobject]@{ Nombre = "HP JumpStart"; Vendor = "HP"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "HP JumpStart"; Desc = "Suite promocional de HP, ampliamente documentada como bloatware de venta cruzada."; Revisar = $false }
-    [pscustomobject]@{ Nombre = "WildTangent Games / Helper"; Vendor = "WildTangent"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "WildTangent"; Desc = "Plataforma de juegos casuales con publicidad, preinstalada en muchos OEMs (Dell/HP/Acer)."; Revisar = $false }
-    [pscustomobject]@{ Nombre = "McAfee (trial preinstalado)"; Vendor = "McAfee"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "^McAfee"; Desc = "Es un ANTIVIRUS REAL de prueba, no telemetria pura."; Revisar = $true }
-    [pscustomobject]@{ Nombre = "Norton (trial preinstalado)"; Vendor = "Norton / Gen Digital"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "Norton (Security|360|AntiVirus)"; Desc = "Mismo caso que McAfee: antivirus real de prueba."; Revisar = $true }
-    [pscustomobject]@{ Nombre = "MyASUS / Armoury Crate"; Vendor = "ASUS"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "^MyASUS$|Armoury Crate"; Desc = "Tiene funciones reales (BIOS, RGB, perifericos) ademas de contenido promocional."; Revisar = $true }
-    [pscustomobject]@{ Nombre = "HP Support Assistant"; Vendor = "HP"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "HP Support Assistant"; Desc = "Actualiza drivers de HP pero tambien empuja ofertas. Utilidad real, es gusto personal."; Revisar = $true }
-    [pscustomobject]@{ Nombre = "Dell SupportAssist"; Vendor = "Dell"; Confianza = "Publico"; Tipo = "uninstall"; Patron = "Dell SupportAssist"; Desc = "Diagnostico y drivers de Dell. Tuvo vulnerabilidades documentadas en el pasado - si lo conservas, mantenelo actualizado."; Revisar = $true }
-)
-
-function Remove-BloatEntry($entry) {
-    # Registry commands are untrusted, including HKCU entries. Never elevate or
-    # pass these strings to a shell. Product-specific adapters need separate review.
-    Write-Warn "Desinstalacion automatica no disponible para este producto."
-    Write-Info "Abri Configuracion > Aplicaciones > Aplicaciones instaladas y verifica nombre/editor."
-    return [pscustomobject]@{ Status = 'ManualRequired'; Verified = $false }
+function Invoke-PrivacyPlan($Plan,[string]$JournalPath) {
+    $journal = [pscustomobject]@{ Schema=1; Version=$script:Version; Sid=(Get-Identity); Machine=$env:COMPUTERNAME; Created=[DateTime]::UtcNow.ToString('o'); Entries=@($Plan) }
+    foreach ($entry in $journal.Entries) {
+        if ($script:PrivacyNames -notcontains $entry.Name -or $entry.After -ne 0) { throw 'Plan no permitido.' }
+    }
+    Save-Journal $journal $JournalPath # A failed backup prevents all writes.
+    foreach ($entry in $journal.Entries) {
+        try {
+            $current = Read-PrivacyValue $entry.Name
+            if ($current -ne $entry.Before -or (($null -eq $current) -ne ($null -eq $entry.Before))) { throw 'Estado cambiado desde la vista previa.' }
+            $entry.Status='Started'; Save-Journal $journal $JournalPath
+            Write-PrivacyValue $entry.Name ([int]0)
+            if ((Read-PrivacyValue $entry.Name) -ne 0) { throw 'El valor no cambio.' }
+            $entry.Status='Verified'
+        } catch { $entry.Status='Failed'; Write-Warning ($entry.Name+': '+$_.Exception.Message) }
+        Save-Journal $journal $JournalPath
+    }
+    return $journal
 }
-
-function Invoke-AuditBloatware {
-    Write-Titulo "PROGRAMAS CONOCIDOS COMO INNECESARIOS"
-    Write-Host "  [Verificado] = probado de verdad en una maquina real."
-    Write-Host "  [Publico]    = documentado por la comunidad, NO probado en esta sesion - confirmalo antes de sacarlo."
-    $regPaths = @("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*")
-    try { $todos = Get-ItemProperty $regPaths -ErrorAction Stop } catch { Write-Warn "Inventario de programas incompleto: $($_.Exception.Message)"; return }
-    $encontrados = 0
-    foreach ($item in $BloatwareDB) {
-        if ($item.Tipo -eq "uninstall") {
-            if ($item.Patron -match 'McAfee|Norton') { continue }
-            $match = $todos | Where-Object { $_.DisplayName -match $item.Patron }
-            if (-not $match) { continue }
-            $encontrados++
-            Write-Host ""
-            Write-Host "  [$($item.Confianza)] $($item.Nombre) ($($item.Vendor))"
-            Write-Host "    $($item.Desc)"
-            foreach ($m in $match) {
-                Write-Host "    Encontrado: $($m.DisplayName) $($m.DisplayVersion)"
-                $pregunta = if ($item.Revisar) { "Si NO usas esto, sacarlo ahora?" } else { "Sacarlo ahora?" }
-                if (Ask-SN $pregunta) { Remove-BloatEntry $m | Out-Null }
-            }
-        } elseif ($item.Tipo -eq "service") {
-            $svc = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $item.Patron -or $_.DisplayName -match $item.Patron }
-            if (-not $svc) { continue }
-            $encontrados++
-            Write-Host ""
-            Write-Host "  [$($item.Confianza)] $($item.Nombre) ($($item.Vendor))"
-            Write-Host "    $($item.Desc)"
-            foreach ($s in $svc) {
-                Write-Host "    Servicio: $($s.Name) [$($s.State)]"
-                Write-Info "Solo diagnostico: conservar el servicio hasta verificar sus dependencias."
+function Undo-Privacy([string]$JournalPath) {
+    Test-LocalPath $JournalPath | Out-Null
+    if ((Get-Item -LiteralPath $JournalPath).Length -gt 1MB) { throw 'Registro demasiado grande.' }
+    $journal = Get-Content -LiteralPath $JournalPath -Raw | ConvertFrom-Json
+    if ($journal.Schema -ne 1 -or $journal.Sid -ne (Get-Identity) -or $journal.Machine -ne $env:COMPUTERNAME -or @($journal.Entries).Count -gt $script:PrivacyNames.Count) { throw 'Registro incompatible con esta identidad o maquina.' }
+    foreach ($e in $journal.Entries) {
+        if ($script:PrivacyNames -notcontains $e.Name -or $e.After -ne 0 -or ($null -ne $e.Before -and ($e.Before -isnot [int] -and $e.Before -isnot [long]))) { throw 'Registro invalido.' }
+    }
+    foreach ($e in $journal.Entries) {
+        if ($e.Status -eq 'Restored' -or $e.Status -eq 'Pending') { continue }
+        try {
+            if ((Read-PrivacyValue $e.Name) -ne 0) { throw 'Cambio posterior detectado; se conserva.' }
+            Write-PrivacyValue $e.Name $e.Before
+            $actual = Read-PrivacyValue $e.Name
+            if ($actual -ne $e.Before -or (($null -eq $actual) -ne ($null -eq $e.Before))) { throw 'Restauracion no verificada.' }
+            $e.Status='Restored'
+        } catch { Write-Warning ($e.Name+': '+$_.Exception.Message) }
+        Save-Journal $journal $JournalPath
+    }
+    return $journal
+}
+function Get-TempRoot {
+    return Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp'
+}
+function Get-TempPlan([int]$Days=14) {
+    if ($Days -lt 14) { throw 'Antiguedad minima: 14 dias.' }
+    $root = Test-LocalPath (Get-TempRoot)
+    if (-not (Test-Path -LiteralPath $root)) { return }
+    $cutoff = [DateTime]::UtcNow.AddDays(-$Days)
+    $stack = New-Object 'Collections.Generic.Stack[string]'; $stack.Push($root)
+    $count=0
+    while ($stack.Count) {
+        $dir=$stack.Pop(); Test-LocalPath $dir | Out-Null
+        foreach ($item in Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop) {
+            $count++; if ($count -gt 10000) { throw 'Limite de 10000 elementos alcanzado; limpieza cancelada. Seleccionar una carpeta menor desde Almacenamiento.' }
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+            if ($item.PSIsContainer) { $stack.Push($item.FullName); continue }
+            if ($item.LastWriteTimeUtc -lt $cutoff -and $item.CreationTimeUtc -lt $cutoff) {
+                [pscustomobject]@{ Path=$item.FullName; Length=$item.Length; Modified=$item.LastWriteTimeUtc.Ticks; Created=$item.CreationTimeUtc.Ticks }
             }
         }
     }
-    if ($encontrados -eq 0) { Write-OK "No se encontro ninguno de los $($BloatwareDB.Count) programas de la lista conocida." }
 }
-
-# ============================================================
-#  CATEGORIA 5: LIMPIEZA DE DISCO
-# ============================================================
-function Invoke-LimpiezaDisco {
-    Write-Titulo "LIMPIEZA DE DISCO"
-    # El propio script vive como copia temporal en $env:TEMP mientras corre -
-    # se excluye explicitamente para no auto-borrarse a mitad de ejecucion.
-    $miScript = $PSCommandPath
-
-    $antes = (Get-PSDrive C -ErrorAction SilentlyContinue).Free
-    if ($antes) { Write-Info "Espacio libre actual en C: $([math]::Round($antes/1GB,1)) GB" }
-
-    Write-Host ""
-    Write-Info "Calculando temporales de Windows..."
-    $tempUser = $env:TEMP
-    $tempSys = "C:\Windows\Temp"
-    $mbUser = Get-DirSizeMB $tempUser
-    $mbSys = Get-DirSizeMB $tempSys
-    Write-Host "  Temp de usuario ($tempUser): $mbUser MB"
-    Write-Host "  Temp del sistema ($tempSys): $mbSys MB"
-    if (($mbUser + $mbSys) -gt 0) {
-        if (Ask-SN "Borrar estos temporales? (los archivos en uso se saltean solos, sin riesgo)") {
-            $r1 = Remove-DirContents $tempUser @($miScript)
-            $r2 = Remove-DirContents $tempSys
-            Write-OK "Temp de usuario: $($r1.Ok) borrados, $($r1.Fail) en uso (salteados)."
-            Write-OK "Temp del sistema: $($r2.Ok) borrados, $($r2.Fail) en uso (salteados)."
-        }
-    } else { Write-OK "Temporales ya estan vacios." }
-
-    Write-Host ""
-    Write-Info "Calculando cache de navegadores (Chrome/Edge, todos los perfiles)..."
-    $navegadores = @(
-        "$env:LOCALAPPDATA\Google\Chrome\User Data",
-        "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+function Invoke-TempPlan($Plan) {
+    $root=Test-LocalPath (Get-TempRoot); $bytes=[long]0; $deleted=0; $skipped=0
+    foreach ($entry in $Plan) {
+        try {
+            $path=Test-LocalPath $entry.Path
+            if (-not $path.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Fuera del destino permitido.' }
+            $item=Get-Item -LiteralPath $path -Force
+            if ($item.PSIsContainer -or $item.Length -ne $entry.Length -or $item.LastWriteTimeUtc.Ticks -ne $entry.Modified -or $item.CreationTimeUtc.Ticks -ne $entry.Created -or $item.LastWriteTimeUtc -ge [DateTime]::UtcNow.AddDays(-14) -or $item.CreationTimeUtc -ge [DateTime]::UtcNow.AddDays(-14)) { throw 'Archivo cambiado o reciente.' }
+            Remove-Item -LiteralPath $path -Force -ErrorAction Stop # Never recursive.
+            if (Test-Path -LiteralPath $path) { throw 'El archivo sigue presente.' }
+            $bytes+=$entry.Length; $deleted++
+        } catch { $skipped++; Write-Warning $_.Exception.Message }
+    }
+    return [pscustomobject]@{ Deleted=$deleted; Skipped=$skipped; Bytes=$bytes; Reversible=$false }
+}
+function Invoke-Check($Id,[scriptblock]$Read) {
+    $watch=[Diagnostics.Stopwatch]::StartNew()
+    try { $data=@(& $Read); return [pscustomobject]@{ Id=$Id; Status='Checked'; Data=$data; Error=$null; Seconds=$watch.Elapsed.TotalSeconds } }
+    catch { return [pscustomobject]@{ Id=$Id; Status='Unavailable'; Data=@(); Error=$_.Exception.Message; Seconds=$watch.Elapsed.TotalSeconds } }
+}
+function Get-SecurityReport {
+    $checks=@(
+        Invoke-Check 'Windows' { Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 15 | Select-Object Caption,Version,BuildNumber,LastBootUpTime }
+        Invoke-Check 'Defender' { Get-MpComputerStatus | Select-Object AntivirusEnabled,RealTimeProtectionEnabled,AMRunningMode,IsTamperProtected,AntivirusSignatureLastUpdated,QuickScanEndTime }
+        Invoke-Check 'AntivirusProviders' { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -OperationTimeoutSec 15 | Select-Object displayName,productState }
+        Invoke-Check 'Firewall' { Get-NetFirewallProfile -PolicyStore ActiveStore | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction }
+        Invoke-Check 'ListeningTCP' { Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess }
+        Invoke-Check 'RunCurrentUser' { if(Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'){Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' | Select-Object * -ExcludeProperty PS*} }
+        Invoke-Check 'Tasks' { Get-ScheduledTask | Select-Object TaskPath,TaskName,State,@{n='Actions';e={@($_.Actions | Select-Object Execute,Arguments)}} }
+        Invoke-Check 'Services' { Get-CimInstance Win32_Service -OperationTimeoutSec 15 | Where-Object StartMode -eq Auto | Select-Object Name,State,PathName }
+        Invoke-Check 'Apps' { Get-AppxPackage | Select-Object Name,Publisher,PackageFamilyName }
+        Invoke-Check 'Privacy' { foreach($n in $script:PrivacyNames){ [pscustomobject]@{Name=$n;Value=(Read-PrivacyValue $n)} } }
     )
-    $totalCacheMB = 0
-    $cachePaths = @()
-    foreach ($base in $navegadores) {
-        if (-not (Test-Path $base)) { continue }
-        Get-ChildItem $base -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            foreach ($sub in @("Cache", "Code Cache", "GPUCache")) {
-                $p = Join-Path $_.FullName $sub
-                $mb = Get-DirSizeMB $p
-                if ($mb -gt 0) { $totalCacheMB += $mb; $cachePaths += $p }
-            }
-        }
-    }
-    Write-Host "  Total cache: $([math]::Round($totalCacheMB,1)) MB en $($cachePaths.Count) carpetas"
-    if ($totalCacheMB -gt 0) {
-        Write-Info "Tip: cerra el navegador antes de esto para que no se recree mientras se borra."
-        if (Ask-SN "Borrar la cache de los navegadores?") {
-            $ok = 0; $fail = 0
-            foreach ($p in $cachePaths) { $r = Remove-DirContents $p; $ok += $r.Ok; $fail += $r.Fail }
-            Write-OK "$ok archivos borrados, $fail en uso (salteados - normal si el navegador esta abierto)."
-        }
-    } else { Write-OK "Sin cache significativa." }
-
-    Write-Host ""
-    Write-Info "Papelera de reciclaje..."
-    try {
-        $shellCom = New-Object -ComObject Shell.Application
-        $bin = $shellCom.Namespace(0xA)
-        $items = @($bin.Items())
-        if ($items.Count -gt 0) {
-            $mbPapelera = [math]::Round((($items | ForEach-Object { $_.Size } | Measure-Object -Sum).Sum) / 1MB, 1)
-            Write-Host "  $($items.Count) elemento(s), $mbPapelera MB"
-            if (Ask-SN "Vaciar la Papelera de reciclaje? (PERMANENTE, no se puede deshacer)") {
-                $borrados = 0
-                foreach ($item in $items) {
-                    try { Remove-Item -LiteralPath $item.Path -Recurse -Force -ErrorAction Stop; $borrados++ } catch {}
-                }
-                Write-OK "$borrados de $($items.Count) elemento(s) borrados."
-            }
-        } else { Write-OK "Papelera ya vacia." }
-    } catch { Write-Warn "No se pudo acceder a la Papelera: $($_.Exception.Message)" }
-
-    Write-Host ""
-    Write-Info "Descargas acumuladas de Windows Update..."
-    $wuPath = "C:\Windows\SoftwareDistribution\Download"
-    $mbWU = Get-DirSizeMB $wuPath
-    Write-Host "  $wuPath : $mbWU MB"
-    Write-Info "Mantenimiento de Windows Update: usar Configuracion > Sistema > Almacenamiento."
-    Write-Info "No se detienen servicios ni se borran descargas de actualizaciones desde este flujo."
-
-    Write-Host ""
-    Write-Info "Cache de Delivery Optimization (piezas de actualizaciones compartidas entre PCs)..."
-    try {
-        Get-DeliveryOptimizationStatus -ErrorAction Stop | Out-Null
-        if (Ask-SN "Limpiar la cache de Delivery Optimization?") {
-            Delete-DeliveryOptimizationCache -Force -ErrorAction Stop *>$null
-            Write-OK "Limpiada."
-        }
-    } catch { Write-Info "No disponible en este Windows (no es un problema)." }
-
-    Write-Host ""
-    if (Test-Path "C:\Windows.old") {
-        $mbOld = Get-DirSizeMB "C:\Windows.old"
-        Write-Warn "Existe C:\Windows.old ($mbOld MB) - restos de una actualizacion de Windows anterior."
-        Write-Info "No se borra automaticamente aca (tiene permisos especiales que lo hacen delicado). Para sacarlo: Configuracion > Almacenamiento > Archivos temporales > 'Instalacion anterior de Windows'."
-    } else { Write-OK "Sin C:\Windows.old" }
-
-    Write-Host ""
-    $despues = (Get-PSDrive C -ErrorAction SilentlyContinue).Free
-    if ($antes -and $despues) {
-        $liberadoGB = [math]::Round(($despues - $antes) / 1GB, 2)
-        if ($liberadoGB -gt 0) { Write-OK "Espacio liberado en esta pasada: $liberadoGB GB" }
-        Write-Info "Espacio libre ahora en C: $([math]::Round($despues/1GB,1)) GB"
-    }
+    return [pscustomobject]@{ Schema=1; Version=$script:Version; Created=[DateTime]::UtcNow.ToString('o'); Sid=(Get-Identity); Checks=$checks; Gaps=@('No comprueba exposicion desde Internet, router, VPN ni compromiso desconocido.','No valida cobertura ESU/LTSC ni todas las actualizaciones/CVE.','No incluye motor IOC de Zero-Breach en esta version.','Escuchas TCP no implican accesibilidad externa. Proveedores AV no certifican salud efectiva.','No es una sandbox de red: las consultas de Windows pueden tener actividad de red del sistema.') }
 }
-
-# ============================================================
-#  CATEGORIA 7: APPS DE LA TIENDA PREINSTALADAS
-# ============================================================
-# LISTA BLANCA ESTRICTA: solo se ofrece sacar lo que esta explicitamente
-# ACA. Nunca se toca nada fuera de esta lista - muchos paquetes Appx son
-# piezas del propio Windows (Start, Explorer, Widgets, teclado tactil,
-# Xbox Game Bar/overlay) y sacar el equivocado puede romper el sistema.
-# Por eso NO hay un enfoque de "blocklist" (sacar todo menos lo protegido).
-$AppsTiendaDB = @(
-    [pscustomobject]@{ Patron = "*CandyCrush*";                   Nombre = "Candy Crush (todas las variantes)";              Revisar = $false }
-    [pscustomobject]@{ Patron = "king.com.*";                     Nombre = "Otros juegos de King.com";                        Revisar = $false }
-    [pscustomobject]@{ Patron = "*BubbleWitch*";                  Nombre = "Bubble Witch Saga";                               Revisar = $false }
-    [pscustomobject]@{ Patron = "*Disney*";                       Nombre = "Disney+";                                         Revisar = $false }
-    [pscustomobject]@{ Patron = "*Netflix*";                      Nombre = "Netflix";                                         Revisar = $false }
-    [pscustomobject]@{ Patron = "*SpotifyAB.SpotifyMusic*";       Nombre = "Spotify (version Tienda)";                        Revisar = $true }
-    [pscustomobject]@{ Patron = "*TikTok*";                       Nombre = "TikTok";                                          Revisar = $false }
-    [pscustomobject]@{ Patron = "*Instagram*";                    Nombre = "Instagram";                                       Revisar = $false }
-    [pscustomobject]@{ Patron = "*Facebook*";                     Nombre = "Facebook";                                        Revisar = $false }
-    [pscustomobject]@{ Patron = "*Twitter*";                      Nombre = "Twitter / X";                                     Revisar = $false }
-    [pscustomobject]@{ Patron = "*LinkedIn*";                     Nombre = "LinkedIn";                                        Revisar = $false }
-    [pscustomobject]@{ Patron = "*MicrosoftSolitaireCollection*"; Nombre = "Solitario de Microsoft (con publicidad)";         Revisar = $true }
-    [pscustomobject]@{ Patron = "*BingNews*";                     Nombre = "Noticias (MSN/Bing News)";                        Revisar = $false }
-    [pscustomobject]@{ Patron = "*BingWeather*";                  Nombre = "Clima (MSN/Bing Weather)";                        Revisar = $true }
-    [pscustomobject]@{ Patron = "*BingFinance*";                  Nombre = "Finanzas (MSN Money)";                            Revisar = $false }
-    [pscustomobject]@{ Patron = "*MixedReality*";                 Nombre = "Mixed Reality Portal (si no tenes visor VR)";     Revisar = $true }
-    [pscustomobject]@{ Patron = "*Microsoft3DViewer*";            Nombre = "Visor 3D";                                        Revisar = $false }
-    [pscustomobject]@{ Patron = "*MSPaint*";                      Nombre = "Paint 3D (discontinuado por Microsoft)";          Revisar = $false }
-    [pscustomobject]@{ Patron = "*ZuneMusic*";                    Nombre = "Groove Music (discontinuado)";                    Revisar = $false }
-    [pscustomobject]@{ Patron = "*ZuneVideo*";                    Nombre = "Peliculas y TV";                                  Revisar = $true }
-    [pscustomobject]@{ Patron = "*GetHelp*";                      Nombre = "Obtener ayuda";                                   Revisar = $true }
-    [pscustomobject]@{ Patron = "*Getstarted*";                   Nombre = "Sugerencias/introduccion a Windows";              Revisar = $false }
-    [pscustomobject]@{ Patron = "*WindowsFeedbackHub*";           Nombre = "Hub de comentarios";                              Revisar = $true }
-    [pscustomobject]@{ Patron = "*YourPhone*";                    Nombre = "Vinculo con tu telefono (Phone Link)";            Revisar = $true }
-    [pscustomobject]@{ Patron = "*.Todos*";                       Nombre = "Microsoft To Do";                                 Revisar = $true }
-    [pscustomobject]@{ Patron = "*Microsoft.GamingApp*";          Nombre = "App de Xbox (companion de consola)";              Revisar = $true }
-    [pscustomobject]@{ Patron = "*Microsoft.XboxApp*";            Nombre = "App de Xbox (version vieja)";                     Revisar = $true }
-    [pscustomobject]@{ Patron = "*Clipchamp*";                    Nombre = "Clipchamp (editor de video, con version paga)";   Revisar = $true }
-    [pscustomobject]@{ Patron = "*MicrosoftTeams*";               Nombre = "Teams (chat personal/consumer, no el de trabajo)"; Revisar = $true }
-)
-
-function Invoke-AuditAppsTienda {
-    Write-Titulo "APPS DE LA TIENDA PREINSTALADAS"
-    Write-Host "  Solo se ofrece sacar apps de esta lista curada - nunca se toca nada"
-    Write-Host "  fuera de ella (muchos paquetes son del propio Windows y sacarlos puede romper el sistema)."
-    Write-Host "  [Revisar] = tiene uso real para algunos - confirma que no lo usas antes de sacarlo."
-    Write-Host ""
-
-    try { $instaladas = Get-AppxPackage -ErrorAction Stop } catch { Write-Warn "Inventario Appx no disponible: $($_.Exception.Message)"; return }
-    $encontradas = 0
-    foreach ($item in $AppsTiendaDB) {
-        $match = @($instaladas | Where-Object { $_.Name -like $item.Patron -or $_.PackageFullName -like $item.Patron })
-        if ($match.Count -eq 0) { continue }
-        $encontradas++
-        Write-Host ""
-        $tag = if ($item.Revisar) { "[Revisar]" } else { "[Bloatware]" }
-        Write-Host "  $tag $($item.Nombre)"
-        foreach ($m in $match) {
-            Write-Host "    $($m.Name) (version $($m.Version))"
-            $pregunta = if ($item.Revisar) { "Si NO usas esto, sacarlo ahora?" } else { "Sacarlo ahora?" }
-            if (Ask-SN $pregunta) {
-                try {
-                    Remove-AppxPackage -Package $m.PackageFullName -ErrorAction Stop
-                    Write-OK "Eliminada de tu cuenta."
-                    $prov = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $m.Name }
-                    if ($prov) {
-                        if (Ask-SN "  Tambien evitar que se reinstale para OTRAS cuentas nuevas de esta PC?") {
-                            try { Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName -ErrorAction Stop | Out-Null; Write-OK "  Tambien deprovisionada." }
-                            catch { Write-Err "  No se pudo deprovisionar: $($_.Exception.Message)" }
-                        }
-                    }
-                } catch { Write-Err "No se pudo eliminar: $($_.Exception.Message)" }
-            }
-        }
+function Show-Report($Report) {
+    foreach($c in $Report.Checks) {
+        Write-Host "`n[$($c.Status)] $($c.Id)"
+        if ($c.Error) { Write-Warning $c.Error }
+        else { ($c.Data | Format-List | Out-String) -replace '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]','?' | Out-Host }
     }
-    if ($encontradas -eq 0) { Write-OK "No se encontro ninguna de las $($AppsTiendaDB.Count) apps de la lista." }
+    $Report.Gaps | ForEach-Object { Write-Warning $_ }
+    Write-Host 'Revisar Firewall desactivado, proteccion ausente y firmas antiguas en Seguridad de Windows. Mantener Windows y apps actualizados.'
 }
-
-# ============================================================
-#  REPORTE COMPLETO (envuelve las 6 categorias en modo solo-lectura)
-# ============================================================
-function Invoke-ReporteCompleto {
-    Write-Titulo "REPORTE COMPLETO - SOLO DIAGNOSTICO, NO SE MODIFICA NADA"
-    $previousReadOnly = $Global:ModoSoloLectura
-    $Global:ModoSoloLectura = $true
-    try {
-        Invoke-AuditArranque
-        Invoke-AuditSeguridad
-        Invoke-AuditPrivacidad
-        Invoke-AuditBloatware
-        Invoke-LimpiezaDisco
-        Invoke-AuditAppsTienda
-    } finally {
-        $Global:ModoSoloLectura = $previousReadOnly
-    }
-    Write-Titulo "FIN DEL REPORTE - entra a una categoria especifica del menu si queres actuar sobre algo"
+function Export-Report($Report,[string]$Path) {
+    Test-LocalPath $Path | Out-Null
+    $stream=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try { $bytes=[Text.Encoding]::UTF8.GetBytes(($Report|ConvertTo-Json -Depth 10));$stream.Write($bytes,0,$bytes.Length) } finally { $stream.Dispose() }
 }
-
-# ============================================================
-#  MENU PRINCIPAL
-# ============================================================
 if ($LibraryOnly) { return }
-$script:ChangesEnabled = $false
-$Global:ModoSoloLectura = $true
-Write-Warn "Version candidata de diagnostico. Los cambios estan deshabilitados hasta validar el nuevo ejecutor."
-Write-Info "No requiere administrador. Las consultas sin permisos se indican como pendientes."
-Write-Host ""
-Write-Section "  ================================================="
-Write-Section "     EL CENTINELA DE WINDOWS"
-Write-Section "     Limpiador y optimizador"
-Write-Host "     Por Rodolfo Agustin Garcia - ragustingarcia.com" -ForegroundColor DarkGray
-Write-Section "  ================================================="
-
+if ($Audit) {
+    $report=Get-SecurityReport; Show-Report $report
+    if ($ReportPath) { Export-Report $report $ReportPath }
+    return
+}
+Write-Host "El Centinela de Windows $script:Version - usuario: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+Write-Host 'Los cambios afectan esta cuenta. Ejecutar desde su sesion habitual; no requiere administrador. Cerrar instaladores antes de limpiar.'
 while ($true) {
-    Write-Host ""
-    Write-Host "  [1] Reporte completo (diagnostico, no modifica nada)"
-    Write-Host "  [2] Arranque y persistencia"
-    Write-Host "  [3] Seguridad (Windows Defender)"
-    Write-Host "  [4] Privacidad (sugerencias/publicidad de Windows)"
-    Write-Host "  [5] Programas conocidos como innecesarios"
-    Write-Host "  [6] Limpieza de disco"
-    Write-Host "  [7] Apps de la Tienda preinstaladas"
-    Write-Host "  [0] Salir"
-    Write-Host ""
-    $choice = Read-Host "  Elegi una opcion"
-    if ($null -eq $choice -or $choice -eq "") { return }
-    switch ($choice) {
-        "1" { Invoke-ReporteCompleto }
-        "2" { Invoke-AuditArranque }
-        "3" { Invoke-AuditSeguridad }
-        "4" { Invoke-AuditPrivacidad }
-        "5" { Invoke-AuditBloatware }
-        "6" { Invoke-LimpiezaDisco }
-        "7" { Invoke-AuditAppsTienda }
-        "0" { Write-Host ""; Write-OK "Listo, hasta la proxima."; Start-Sleep 1; exit }
-        default { Write-Warn "Opcion invalida." }
-    }
-    if ($choice -ne "0") {
-        Write-Host ""
-        Read-Host "  Presiona ENTER para volver al menu"
-    }
+    Write-Host "`n[1] Diagnostico de seguridad y aplicaciones [2] Reducir publicidad [3] Limpiar temporales antiguos [4] Deshacer privacidad [5] Exportar diagnostico [0] Salir"
+    $choice=Read-Host 'Opcion'
+    if (-not $choice -or $choice -eq '0') { return }
+    try {
+        switch ($choice) {
+            '1' { Show-Report (Get-SecurityReport) }
+            '2' {
+                $plan=@(New-PrivacyPlan); $plan | Format-Table Name,Before,After | Out-Host
+                Write-Host 'Ajustes de sugerencias por usuario; no modifica GPO/MDM ni garantiza persistencia tras actualizaciones. Conserva fotos de Spotlight. Puede requerir cerrar sesion.'
+                if ($plan.Count -and (Confirm-Choice 'Aplicar estos cambios con respaldo?')) {
+                    $folder=Get-StateFolder; $path=Join-Path $folder ('privacy-'+[guid]::NewGuid().ToString('N')+'.json')
+                    $result=Invoke-PrivacyPlan $plan $path
+                    $result.Entries | Format-Table Name,Status | Out-Host; Write-Host "Respaldo: $path"
+                }
+            }
+            '3' {
+                $plan=@(Get-TempPlan); $plan | Format-Table Path,Length | Out-Host
+                Write-Host "$($plan.Count) archivos de mas de 14 dias. El borrado es permanente; no tiene deshacer. Solo Temp de esta cuenta; nunca carpetas completas."
+                if ($plan.Count -and (Confirm-Choice 'Eliminar exactamente los archivos listados?')) { Invoke-TempPlan $plan | Format-List | Out-Host }
+            }
+            '4' {
+                $folder=Get-StateFolder; $files=@(Get-ChildItem -LiteralPath $folder -Filter 'privacy-*.json' -File | Sort-Object LastWriteTime -Descending)
+                for($i=0;$i -lt $files.Count;$i++){Write-Host "[$i] $($files[$i].Name) $($files[$i].LastWriteTime)"}
+                $index=Read-Host 'Numero de respaldo (Enter cancela)'; $number=0
+                if ($index -ne '' -and [int]::TryParse($index,[ref]$number) -and $number -ge 0 -and $number -lt $files.Count -and (Confirm-Choice 'Restaurar ajustes de este respaldo?')) { (Undo-Privacy $files[$number].FullName).Entries | Format-Table Name,Status | Out-Host }
+            }
+            '5' {
+                Write-Host 'El informe contiene rutas, comandos y datos de esta cuenta. Elegir una carpeta privada fuera de sincronizacion si corresponde.'
+                $path=Read-Host 'Ruta absoluta para un JSON nuevo (Enter cancela)'
+                if ($path) {
+                    Export-Report (Get-SecurityReport) $path
+                    Write-Host "Informe: $path"
+                }
+            }
+        }
+    } catch { Write-Warning $_.Exception.Message }
 }

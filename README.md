@@ -1,32 +1,30 @@
-# El Centinela de Windows
+# El Centinela de Windows 0.2.0-rc.1
 
-![El Centinela de Windows](./assets/og-image.png)
+![El Centinela de Windows](assets/og-image.png)
 
-**Candidata de diagnóstico y revisión de seguridad.** Revisa arranque, Defender, publicidad, programas, espacio y apps de la Tienda. Esta versión mantiene las modificaciones deshabilitadas mientras se incorpora un ejecutor con verificación y recuperación.
+Release candidata usable de mantenimiento por usuario: diagnóstico de seguridad, reducción de sugerencias/publicidad con respaldo y deshacer, y limpieza de temporales antiguos con vista previa.
 
-## Uso
+## Empezar
 
-1. Descargar el ZIP y extraerlo completo, conservando `src` junto al BAT.
-2. Abrir `El Centinela de Windows.bat`. Utiliza Windows PowerShell 5.1 sin instalar herramientas ni solicitar elevación automática.
-3. Elegir el reporte o una categoría. Las consultas que no dispongan de permisos pueden quedar incompletas.
+Descargar el ZIP de la release, extraerlo completo y abrir `El Centinela de Windows.bat`. Conservar `src` junto al BAT. Usa Windows PowerShell 5.1, sin instalar herramientas ni pedir administrador. Si una consulta exige más permisos, el informe muestra `Unavailable`; no significa que esté todo bien.
 
-El BAT ya no es un archivo autónomo: requiere `src/Centinela.ps1`. No copiar únicamente el lanzador. Revisar la procedencia de la descarga y las advertencias de Windows antes de ejecutar.
+1. **Diagnóstico:** Defender, proveedores antivirus, firewall efectivo, escuchas TCP, tareas, servicios, apps y ajustes de publicidad. No modifica configuración.
+2. **Privacidad:** vista previa, confirmación exacta, respaldo previo y comprobación de cada valor. Afecta esta cuenta; conservar las fotos de Spotlight. Windows puede restablecer ajustes en actualizaciones o por GPO/MDM. Puede requerir cerrar sesión.
+3. **Temporales:** solo archivos de Temp de esta cuenta, creados y modificados hace más de 14 días; nunca borrado recursivo de carpetas. Omite enlaces y rechaza rutas remotas. Cerrar instaladores y aplicaciones primero. El borrado es permanente.
+4. **Deshacer privacidad:** elegir el respaldo; conserva valores modificados después por otras apps. Respaldos locales bajo `%LOCALAPPDATA%/Centinela/State`, con acceso restringido.
+5. **Exportar:** JSON nuevo en la ruta elegida. Contiene datos privados; revisar antes de compartir. No sobrescribe archivos existentes.
 
-## Alcance de esta candidata
+## Seguridad y límites
 
-- Lanzamiento mediante ruta absoluta, sin código temporal compartido.
-- Sin ejecución de comandos de desinstalación tomados del registro.
-- Sin eliminación de servicios, exclusiones de Defender o descargas de Windows Update.
-- Confirmaciones exactas y tratamiento explícito de inventarios no disponibles.
-- Pruebas aisladas en PowerShell 5.1 y 7; el uso real de todos los lectores en ambos motores todavía requiere validación en VMs.
+Ejecutar desde la sesión habitual de la cuenta a mantener. No desinstala antivirus, apps, servicios o drivers; no cambia reglas de firewall, RDP, cifrado ni políticas empresariales. Esas operaciones requieren validaciones adicionales y se conservan como tareas guiadas desde Windows.
 
-El diagnóstico no certifica ausencia de ataques o vulnerabilidades. No sustituye antivirus, actualizaciones ni una investigación de incidentes.
+La detección de proveedores antivirus no prueba su salud. Una escucha local no demuestra exposición a Internet. No certifica ausencia de compromiso, no comprueba todas las CVE/ESU/LTSC y no incluye aún el motor opcional Zero-Breach-Toolkit. Las consultas de Windows no constituyen aislamiento de red.
 
-Ver [alcance y trabajo pendiente](docs/SECURITY-CANDIDATE.md). Las funciones de limpieza y endurecimiento del plan se habilitarán por entregas después de su validación.
+Esta es una **prerelease**, no una versión estable certificada en toda combinación de hardware/edición. Ver [validación y límites](docs/SECURITY-CANDIDATE.md) y [cambios](CHANGELOG.md).
 
-## Validación
+## Desarrollo y validación
 
-`tests/security.tests.ps1` contiene comprobaciones con operaciones simuladas. El workflow repite esas comprobaciones en Windows PowerShell y PowerShell 7. No ejecuta limpiadores reales sobre el runner.
+Pruebas aisladas en Windows PowerShell 5.1 y PowerShell 7: `tests/security.tests.ps1`. Prueban registro simulado y archivos/ACL/enlaces reales exclusivamente dentro de fixtures descartables. El uso normal sigue utilizando PowerShell 5.1. Empaquetado reproducible: `python build/package.py DESTINO`.
 
 ## Licencia y autor
 

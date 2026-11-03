@@ -1,3 +1,3 @@
-# El Centinela de Windows
+# El Centinela de Windows 0.2.0-rc.1
 
-Candidata de diagnostico de Windows. Las modificaciones estan deshabilitadas mientras se desarrolla el ejecutor verificado. El BAT requiere src/Centinela.ps1; no requiere elevacion automatica. Alcance y limites: docs/SECURITY-CANDIDATE.md. No certifica ausencia de compromiso. Autor: Rodolfo Agustin Garcia, https://ragustingarcia.com/.
+Mantenimiento por usuario: diagnostico defensivo, preferencias de publicidad con respaldo/deshacer y limpieza de temporales antiguos previa confirmacion. Prerelease sin certificacion de ausencia de compromiso. No incluye motor IOC. Requiere ZIP completo con BAT y src. Autor: Rodolfo Agustin Garcia, https://ragustingarcia.com/.

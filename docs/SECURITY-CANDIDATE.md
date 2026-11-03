@@ -1,17 +1,23 @@
-# Candidata de seguridad: alcance y validación
+# Validación de 0.2.0-rc.1
 
-Esta entrega implementa la contención inicial del plan de auditoría del 30/10/2026. Es una candidata de diagnóstico, pendiente del ejecutor transaccional y de validación en VMs. No es la actualización funcional completa del plan de siete entregas.
+Release candidata funcional del 02/11/2026. Lanzador sin elevación automática ni archivos ejecutables temporales. Las acciones implementadas son ajustes de publicidad HKCU y limpieza de archivos antiguos del Temp de la cuenta actual.
 
-El BAT usa el PowerShell del sistema por ruta absoluta, restringe la búsqueda de módulos al directorio de Windows y ejecuta `src/Centinela.ps1` sin extracción temporal ni elevación automática. Distribuir ambos archivos conservando su estructura. El diagnóstico puede quedar incompleto por falta de permisos y se informa como tal en los inventarios corregidos.
+Privacidad: catálogo fijo de nueve valores DWORD, vista previa, rechazo de tipos desconocidos, respaldo antes de escribir, journal por acción, lectura posterior y restauración del valor original o de su ausencia. El journal enlaza SID y máquina; las rutas de registro no se toman del JSON. Deshacer conserva cambios posteriores ajenos y permite reintentar una restauración incompleta.
 
-Las acciones están deshabilitadas por defecto sin interruptor público para reactivarlas. Se retiraron la ejecución genérica de desinstaladores del registro, la eliminación de servicios, la limpieza de exclusiones basada en existencia y el borrado manual de descargas de Windows Update. Los antivirus no se ofrecen como limpieza ordinaria. Solicitar un scan ya no se anuncia como resultado limpio/completado.
+Temporales: destino fijo derivado de LocalApplicationData, unidad local, rutas canónicas y rechazo de reparse points en ancestros; antigüedad de creación/modificación superior a 14 días, máximo 10000 elementos, vista previa y revalidación de tamaño/fechas antes de borrar. No se eliminan carpetas. Los archivos bloqueados o cambiados se omiten con aviso. No existe rollback de este borrado.
 
-La confirmación requiere respuesta completa; cancelar o escribir salir no autoriza acciones. El reporte restaura su estado anterior de solo lectura. Los errores de inventario de programas y Appx se declaran incompletos. Quedan lectores heredados que aún necesitan el contrato de cobertura por comprobación del siguiente PR.
+Reportes: error de consulta distinto de inventario vacío; JSON opcional sin subida automática y sin sobrescribir archivos. El informe incluye datos sensibles. Los servicios de Windows consultados pueden realizar actividad de red; esto no es un análisis estrictamente offline.
 
-## Pruebas
+## Evidencia
 
-Ejecutar `powershell.exe -NoProfile -File tests/security.tests.ps1` y `pwsh.exe -NoProfile -File tests/security.tests.ps1`. Se cargan definiciones mediante `-LibraryOnly`; procesos y mutaciones probados están interceptados. No ejecutan limpieza ni cambios de configuración. CI repite estos controles en ambos motores.
+35 casos iniciales por motor pasaron en PowerShell 5.1.26100.9818 y 7.6.9. Incluyen aplicación/lectura posterior/restauración con registro simulado, fallo de respaldo, fallo de escritura, cambios concurrentes, journal de otra identidad y destinos arbitrarios; eliminación real de archivos de prueba, preservación de recientes, rechazo de destinos externos, ACL y junction real. Pruebas de exportación y catálogo de comprobaciones añadidas al cierre de release; los JSON de validación y CI registran el conteo final.
 
-Pendiente antes de activar modificaciones: acciones tipadas, identidad y ámbito, guardia de rutas, journal con ACL, respaldo y reversión, verificación posterior, catálogos compatibles y pruebas VM con UAC/reinicios/Appx/Defender. También faltan los módulos ampliados de seguridad y la integración opcional de Zero-Breach.
+Ningún ajuste real de la máquina de trabajo se modificó. Junctions y ACL se verificaron con ejecución ampliada sobre carpetas descartables del repositorio. No se dispone de prueba completa en VMs de Home/Pro, hardware ARM64, cambios reales de publicidad tras reinicio o escenarios de instalación/servicing en curso. Por eso la publicación se marca prerelease.
 
-No se declara ausencia de compromiso ni eficacia completa de detección. Una firma digital o un inventario sin resultados no constituyen por sí solos un dictamen de seguridad.
+## Riesgos residuales y alcance posterior
+
+La comprobación de rutas reduce selecciones erróneas y redirecciones, pero no es una sandbox frente a un administrador o proceso del mismo usuario que cambie archivos entre comprobación y borrado. Usar sobre una sesión controlada; ante sospecha de intrusión, preservar evidencias y no limpiar.
+
+Los toggles de publicidad son preferencias por usuario y no garantizan aplicación/persistencia en todas las builds o frente a políticas administradas. Un valor verificado significa que el registro quedó en el valor esperado, no prueba visual de toda publicidad eliminada.
+
+Pendientes fuera de esta release: desinstaladores con adaptadores confiables, catálogo Appx exacto, endurecimiento avanzado de seguridad, cobertura de parches/soporte y adaptador opcional IOC de Zero-Breach. El diagnóstico no es una prueba de ausencia de brechas.

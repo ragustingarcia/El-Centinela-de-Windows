@@ -15,3 +15,9 @@ jobs:
       - name: Isolated security checks
         shell: '${{ matrix.engine }}'
         run: '& ./tests/security.tests.ps1'
+      - name: Reproducible release archive
+        shell: pwsh
+        run: |
+          python build/package.py package-a
+          python build/package.py package-b
+          if ((Get-FileHash package-a/*.zip).Hash -ne (Get-FileHash package-b/*.zip).Hash) { throw 'Non-reproducible archive' }
