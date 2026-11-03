@@ -10,6 +10,18 @@ Write-Output 'PASS native wrong-SID request rejected before action'
 $read=Invoke-ElevatedSecurity 'NetworkRead' @{}
 if($read.Status -ne 'Checked' -or -not $read.Data){throw 'El helper nativo no devolvio inventario de red.'}
 Write-Output 'PASS native worker serialization, same-SID validation and network inventory'
+$base=Join-Path $env:ProgramData 'Centinela\worker'
+$acl=Get-Acl -LiteralPath $base
+if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @('S-1-5-18','S-1-5-32-544')){throw 'Carpeta del worker con propietario no administrador.'}
+if(-not $acl.AreAccessRulesProtected){throw 'La carpeta del worker hereda permisos.'}
+foreach($r in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){if($r.AccessControlType -eq 'Allow' -and ([int]$r.FileSystemRights -band [int][Security.AccessControl.FileSystemRights]'Write,Delete,ChangePermissions,TakeOwnership') -and $r.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544')){throw "ACE escribible: $($r.IdentityReference.Value)"}}
+Write-Output 'PASS native ProgramData worker folder owned by Administrators, no inheritance, read-only for users'
+$copy=Join-Path $env:TEMP ('centinela-tamper-'+[guid]::NewGuid().ToString('N'));Copy-Item (Join-Path (Split-Path $PSScriptRoot -Parent) 'src') $copy -Recurse
+$manifest=Get-WorkerManifest $copy;Add-Content -LiteralPath (Join-Path $copy 'DeepSecurity.ps1') -Value '# tamper'
+$refused=$false;try{& ([scriptblock]::Create((New-WorkerBootstrap $copy ([guid]::NewGuid().ToString('N')) 'QUJD' $manifest)))}catch{$refused=$_.Exception.Message -match 'alterado'}
+Remove-Item -Recurse -Force $copy
+if(-not $refused){throw 'El bootstrap no rechazo un script alterado.'}
+Write-Output 'PASS native bootstrap refuses scripts modified after hashing'
 $listener=New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Loopback),0
 $rule=$null
 try {

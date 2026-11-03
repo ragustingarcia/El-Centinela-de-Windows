@@ -381,18 +381,77 @@ function Invoke-IocScan {
         if($rule){Invoke-ElevatedSecurity 'UndoIsolation' @{Rule=$rule}|Out-Host}
     }
 }
+$script:WorkerFiles=@('SecurityWorker.ps1','Centinela.ps1','Summary.ps1','DeepSecurity.ps1')
+$script:WorkerBootstrap=@'
+$ErrorActionPreference='Stop'
+$src='__SRC__';$id='__ID__';$payload='__PAYLOAD__';$manifest=[ordered]@{__MANIFEST__}
+$sha=[Security.Cryptography.SHA256]::Create();$files=@{}
+foreach($name in $manifest.Keys){
+    $bytes=[IO.File]::ReadAllBytes((Join-Path $src $name))
+    if((-join($sha.ComputeHash($bytes)|ForEach-Object {$_.ToString('X2')})) -ne $manifest[$name]){throw "Archivo alterado antes de elevar: $name. No se ejecuto nada."}
+    $files[$name]=$bytes
+}
+$sys='S-1-5-18';$adm='S-1-5-32-544'
+function Lock-CentinelaFolder([string]$Path){
+    if(Test-Path -LiteralPath $Path){$i=Get-Item -LiteralPath $Path -Force;if(-not $i.PSIsContainer -or ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw "Carpeta protegida invalida: $Path"}}else{New-Item -ItemType Directory -Path $Path|Out-Null}
+    $acl=New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier $adm));$acl.SetAccessRuleProtection($true,$false)
+    $inh=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';$none=[Security.AccessControl.PropagationFlags]::None
+    foreach($s in @($sys,$adm)){$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $s),'FullControl',$inh,$none,'Allow')))}
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545'),'ReadAndExecute',$inh,$none,'Allow')))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+$root=Join-Path $env:ProgramData 'Centinela'
+if(Test-Path -LiteralPath $root){if((Get-Acl -LiteralPath $root).GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($sys,$adm)){Remove-Item -LiteralPath $root -Recurse -Force}}
+Lock-CentinelaFolder $root;$base=Join-Path $root 'worker';Lock-CentinelaFolder $base
+Get-ChildItem -LiteralPath $base -Directory|Where-Object {$_.LastWriteTime -lt (Get-Date).AddHours(-1)}|Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+$dst=Join-Path $base $id;New-Item -ItemType Directory -Path $dst|Out-Null
+foreach($name in $files.Keys){[IO.File]::WriteAllBytes((Join-Path $dst $name),$files[$name])}
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+& (Join-Path $dst 'SecurityWorker.ps1') -Payload $payload
+'@
+function Get-WorkerManifest([string]$Folder=$PSScriptRoot) {
+    $m=[ordered]@{}
+    foreach($f in $script:WorkerFiles){$m[$f]=(Get-FileHash -LiteralPath (Join-Path $Folder $f) -Algorithm SHA256).Hash.ToUpperInvariant()}
+    return $m
+}
+function New-WorkerBootstrap([string]$Source,[string]$Id,[string]$Payload,$Manifest) {
+    if($Id -notmatch '^[a-f0-9]{32}$' -or $Payload -notmatch '^[A-Za-z0-9+/=]+$'){throw 'Solicitud invalida.'}
+    $pairs=foreach($k in $Manifest.Keys){if($k -notin $script:WorkerFiles -or $Manifest[$k] -notmatch '^[A-F0-9]{64}$'){throw 'Manifiesto invalido.'};"'$k'='$($Manifest[$k])'"}
+    return $script:WorkerBootstrap.Replace('__SRC__',$Source.Replace("'","''")).Replace('__ID__',$Id).Replace('__PAYLOAD__',$Payload).Replace('__MANIFEST__',($pairs -join ';'))
+}
+function Get-WorkerResultPath([string]$Id) { Join-Path (Join-Path (Join-Path (Join-Path $env:ProgramData 'Centinela') 'worker') $Id) 'result.json' }
+function Read-WorkerResult([string]$Path,[string]$Id,[string]$Action,[int]$MaxBytes=2MB) {
+    # Solo datos: tamano acotado, JSON, esquema/Id/Accion exactos. Nunca se ejecuta nada del archivo.
+    $base=[IO.Path]::GetFullPath((Join-Path (Join-Path $env:ProgramData 'Centinela') 'worker'))
+    $full=[IO.Path]::GetFullPath($Path)
+    if(-not $full.StartsWith($base+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'Resultado fuera de la carpeta protegida.'}
+    if(-not (Test-Path -LiteralPath $full -PathType Leaf)){throw 'Sin resultado verificable de la operacion elevada.'}
+    $item=Get-Item -LiteralPath $full -Force
+    if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Resultado con enlace no permitido.'}
+    if($item.Length -gt $MaxBytes -or $item.Length -eq 0){throw 'Resultado con tamano invalido.'}
+    if(Get-Command Get-Acl -ErrorAction SilentlyContinue){
+        $owner=(Get-Acl -LiteralPath $full).GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if($owner -notin @('S-1-5-18','S-1-5-32-544') -and $owner -ne (Get-Identity)){throw 'Resultado con propietario no confiable.'}
+    }
+    try{$doc=[IO.File]::ReadAllText($full)|ConvertFrom-Json}catch{throw 'Resultado ilegible (JSON invalido).'}
+    if($doc -isnot [pscustomobject] -or $doc.Schema -ne 'Centinela.WorkerResult.1' -or $doc.Id -ne $Id -or $doc.Action -ne $Action -or $doc.Result -isnot [pscustomobject] -or $doc.Result.Status -isnot [string] -or $doc.Result.Status -notmatch '^[A-Za-z]{1,40}$'){throw 'Resultado con formato inesperado; se descarta.'}
+    return $doc.Result
+}
 function Invoke-ElevatedSecurity([string]$Action,$Arguments) {
     if($Action -notin @('BlockListener','UndoBlock','IsolatePython','UndoIsolation','InstallSecurityUpdates','EnableRealtime','UpdateSignatures','QuickScan','NetworkRead')){throw 'Accion privilegiada no permitida.'}
-    $id=[guid]::NewGuid().ToString('N')
-    $payload=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((@{Action=$Action;Arguments=$Arguments;Sid=(Get-Identity);Id=$id}|ConvertTo-Json -Compress)))
-    $worker=Join-Path $PSScriptRoot 'SecurityWorker.ps1';$resultPath=Join-Path (Get-StateFolder) ('worker-'+$id+'.json')
-    if(Test-IsAdmin){& $worker -Payload $payload}else{
+    $id=[guid]::NewGuid().ToString('N');$manifest=Get-WorkerManifest $PSScriptRoot
+    $payload=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((@{Action=$Action;Arguments=$Arguments;Sid=(Get-Identity);Id=$id;Manifest=$manifest}|ConvertTo-Json -Compress)))
+    $bootstrap=New-WorkerBootstrap $PSScriptRoot $id $payload $manifest
+    if(Test-IsAdmin){& ([scriptblock]::Create($bootstrap))}else{
+        $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
+        if($encoded.Length -gt 30000){throw 'Solicitud demasiado grande para elevar.'}
         $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $child=Start-Process -FilePath $ps -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$worker+'"'),'-Payload',$payload) -PassThru -Wait
-        if($child.ExitCode -ne 0){throw 'La operacion elevada fallo o fue cancelada.'}
+        # Sin -File ni -ExecutionPolicy Bypass sobre la carpeta del usuario: el bloque verifica hashes, copia a ProgramData protegido y corre desde ahi.
+        $child=Start-Process -FilePath $ps -Verb RunAs -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -PassThru -Wait
+        if($child.ExitCode -ne 0){throw 'La operacion elevada fallo, fue cancelada o detecto archivos alterados.'}
     }
-    if(-not (Test-Path -LiteralPath $resultPath)){throw 'Sin resultado verificable de la operacion elevada.'}
-    Get-Content -LiteralPath $resultPath -Raw|ConvertFrom-Json
+    Read-WorkerResult (Get-WorkerResultPath $id) $id $Action
 }
 function Install-SelectedSecurityUpdates($Ids) {
     $approved=@($Ids)
