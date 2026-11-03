@@ -1,3 +1,3 @@
-# El Centinela de Windows 0.3.0-rc.1
+# El Centinela de Windows 0.3.1-rc.1
 
 Diagnostico, privacidad reversible, temporales, investigacion de red, bloqueo reversible, parches WUA, soporte oficial, correlacion CVE Microsoft, adaptador Zero-Breach fijado y prueba externa importable. Consultas online y acciones privilegiadas requieren consentimiento. Prerelease con cobertura y evidencia explicitas; no garantiza ausencia de compromiso. Autor: Rodolfo Agustin Garcia, https://ragustingarcia.com/.

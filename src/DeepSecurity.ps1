@@ -11,15 +11,34 @@ function Invoke-BoundedRead([scriptblock]$Read,[int]$Seconds=45) {
     $job=Start-Job -ScriptBlock $Read
     try {
         if(-not (Wait-Job $job -Timeout $Seconds)){throw 'Tiempo de consulta agotado; cobertura pendiente.'}
-        if($job.State -ne 'Completed'){throw 'La consulta no se completo.'}
+        if($job.State -ne 'Completed'){
+            # Antes se descartaba el motivo real (p. ej. "El router no expone mapeos UPnP"). Ahora se informa.
+            $reason=$null
+            foreach($child in @($job.ChildJobs)){
+                if($child.JobStateInfo.Reason){$reason=$child.JobStateInfo.Reason.Message;break}
+                $err=@($child.Error)|Select-Object -First 1
+                if($err){$reason=[string]$err.Exception.Message;break}
+            }
+            if(-not $reason){$reason='Windows no informo el motivo.'}
+            throw ('La consulta no se completo: '+$reason)
+        }
         Receive-Job $job -ErrorAction Stop
     } finally {Stop-Job $job -ErrorAction SilentlyContinue;Remove-Job $job -Force -ErrorAction SilentlyContinue}
 }
 function Get-NetworkInvestigation {
     $processes=@{};foreach($p in Get-CimInstance Win32_Process -OperationTimeoutSec 15){$processes[[int]$p.ProcessId]=$p}
-    $listeners=foreach($l in Get-NetTCPConnection -State Listen -ErrorAction Stop){
-        $p=$processes[[int]$l.OwningProcess]
-        [pscustomobject]@{Address=$l.LocalAddress;Port=$l.LocalPort;ProcessId=$l.OwningProcess;Process=$p.Name;Executable=$p.ExecutablePath;Scope=$(if($l.LocalAddress -eq '::1' -or $l.LocalAddress -match '^127\.'){ 'Loopback' }else{'Network'});CanBlock=($l.OwningProcess -gt 4 -and $l.LocalPort -notin @(22,135,139,445,3389,5900,5938,5985,5986) -and [bool]$p.ExecutablePath -and -not $p.ExecutablePath.StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase))}
+    # Solo escuchas reales (Get-ListeningSockets descarta PID 0/TIME_WAIT y filas que no figuran como LISTEN en .NET).
+    # IPv4 e IPv6 del mismo programa/puerto se agrupan en una fila.
+    $listeners=foreach($g in @(Get-ListeningSockets|Group-Object {[string]$_.OwningProcess+'|'+$_.LocalPort})){
+        $l=$g.Group[0];$p=$processes[[int]$l.OwningProcess]
+        $addresses=@($g.Group|ForEach-Object {[string]$_.LocalAddress}|Select-Object -Unique)
+        $scopes=@($addresses|ForEach-Object {Get-ListenerScope $_})
+        $scope=if($scopes -contains 'AllInterfaces'){'AllInterfaces'}elseif($scopes -contains 'SingleInterface'){'SingleInterface'}else{'Loopback'}
+        $isSystemService=Test-WindowsListener $p.Name $p.ExecutablePath $l.OwningProcess
+        $protected=[int]$l.LocalPort -in @(22,135,139,445,3389,5900,5938,5985,5986)
+        $canBlock=($scope -ne 'Loopback' -and [int]$l.OwningProcess -gt 4 -and -not $protected -and [bool]$p.ExecutablePath -and -not $isSystemService)
+        $note=if($canBlock){''}elseif($scope -eq 'Loopback'){'Solo accesible desde esta PC; no hace falta bloquear.'}elseif($isSystemService){'Servicio de Windows; bloquearlo puede romper funciones del sistema.'}elseif($protected){'Puerto de administracion remota protegido; desactivar el servicio desde su configuracion.'}elseif(-not $p.ExecutablePath){'No se pudo leer la ruta del programa (puede ser un servicio de otra cuenta). Abrir Centinela y aceptar UAC al reintentar la lectura.'}else{'Bloqueo no disponible.'}
+        [pscustomobject]@{Address=($addresses -join ', ');Port=$l.LocalPort;ProcessId=$l.OwningProcess;Process=$p.Name;Executable=$p.ExecutablePath;Scope=$scope;IsWindows=$isSystemService;Risk=(Get-ListenerRisk $l.LocalPort $scope $isSystemService);CanBlock=$canBlock;BlockNote=$note}
     }
     $rules=@(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Enabled True -ErrorAction Stop)
     if($rules.Count -gt 1000){throw 'Mas de 1000 reglas; investigacion cancelada para no presentar cobertura incompleta como completa.'}
@@ -30,7 +49,7 @@ function Get-NetworkInvestigation {
         [pscustomobject]@{Name=$rule.Name;DisplayName=$rule.DisplayName;Action=$rule.Action;Profile=$rule.Profile;Source=$rule.PolicyStoreSourceType;Protocol=$ports.Protocol;LocalPort=$ports.LocalPort;Program=$app.Program;LocalAddress=$address.LocalAddress;RemoteAddress=$address.RemoteAddress;Enforcement=$rule.EnforcementStatus}
     }
     [pscustomobject]@{
-        Listeners=@($listeners)
+        Listeners=@($listeners|Sort-Object @{e={if($_.Scope -eq 'Loopback'){2}elseif($_.IsWindows){1}else{0}}},Port)
         Routes=@(Get-NetRoute -ErrorAction Stop|Where-Object DestinationPrefix -in @('0.0.0.0/0','::/0')|Select-Object InterfaceAlias,NextHop,RouteMetric)
         Adapters=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop|Where-Object {$_.Status -eq 'Up'}|Select-Object Name,InterfaceDescription,Status)
         VPNProfiles=(Invoke-Check 'VPNProfiles' { @((Get-VpnConnection -ErrorAction Stop))+@((Get-VpnConnection -AllUserConnection -ErrorAction Stop))|Select-Object Name,TunnelType,ConnectionStatus,ServerAddress })
@@ -40,11 +59,14 @@ function Get-NetworkInvestigation {
 }
 function Get-RouterMappings {
     Invoke-BoundedRead {
-        $nat=New-Object -ComObject HNetCfg.NATUPnP
-        $collection=$nat.StaticPortMappingCollection
-        if($null -eq $collection){throw 'El router no expone mapeos UPnP a esta cuenta. No equivale a ausencia de redirecciones.'}
+        try{$nat=New-Object -ComObject HNetCfg.NATUPnP;$collection=$nat.StaticPortMappingCollection}
+        catch{throw ('Windows no pudo consultar UPnP del router ('+$_.Exception.Message+'). Puede estar desactivada la deteccion de redes.')}
+        if($null -eq $collection){
+            # Caso mas comun: UPnP desactivado en el router o red marcada Publica. No es un error: se informa como dato.
+            return [pscustomobject]@{UPnPAvailable=$false;Mappings=@();Scope='El router no respondio a UPnP (desactivado, no soportado o red Publica). Las redirecciones manuales solo se ven en la configuracion del router.'}
+        }
         $entries=@();foreach($m in $collection){$entries+=[pscustomobject]@{ExternalPort=$m.ExternalPort;Protocol=$m.Protocol;InternalPort=$m.InternalPort;InternalClient=$m.InternalClient;Enabled=$m.Enabled;Description=$m.Description}}
-        [pscustomobject]@{Mappings=$entries;Scope='Mapeos UPnP publicados; reglas manuales y administracion remota del router requieren su interfaz.'}
+        [pscustomobject]@{UPnPAvailable=$true;Mappings=$entries;Scope='Mapeos UPnP publicados; reglas manuales y administracion remota del router requieren su interfaz.'}
     }
 }
 function Get-PendingUpdates {
@@ -62,8 +84,22 @@ function Get-OSLicensing {
     $licenses=@(Get-CimInstance SoftwareLicensingProduct -Filter 'LicenseStatus=1' -OperationTimeoutSec 20|Where-Object {$_.Name -match 'ESU|Extended Security'}|Select-Object Name,Description,LicenseStatus)
     [pscustomobject]@{Caption=$os.Caption;Build=$os.BuildNumber;Edition=$version.EditionID;DisplayVersion=$version.DisplayVersion;ESULicenses=$licenses;LifecycleReference='https://learn.microsoft.com/windows/release-health/';Interpretation='Canal, edicion y licencias ESU detectadas. Una licencia encontrada no acredita por si sola cobertura vigente; contrastar periodo y parches ofrecidos.'}
 }
+function Get-InsiderInfo {
+    $info=[pscustomobject]@{IsInsider=$false;Channel=$null}
+    foreach($key in @('HKLM:\SOFTWARE\Microsoft\WindowsSelfHost\Applicability','HKLM:\SOFTWARE\Microsoft\WindowsSelfHost\UI\Selection')){
+        $v=Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+        if(-not $v){continue}
+        $channel=@($v.BranchName,$v.UIBranch,$v.Ring,$v.UIRing)|Where-Object {$_}|Select-Object -First 1
+        if($channel -or $v.EnablePreviewBuilds -eq 2){$info.IsInsider=$true;if($channel -and -not $info.Channel){$info.Channel=[string]$channel}}
+    }
+    return $info
+}
 function Get-SupportAssessment {
     $os=Get-OSLicensing
+    $insider=$null;try{$insider=Get-InsiderInfo}catch{}
+    if($insider -and $insider.IsInsider){
+        return [pscustomobject]@{OS=$os;Status='Insider';Source='Registro WindowsSelfHost';CheckedAt=[datetime]::UtcNow.ToString('o');EndDate=$null;Detail="Windows Insider (canal: $(if($insider.Channel){$insider.Channel}else{'no informado'}), build $($os.Build)). Las builds de prueba no figuran en el ciclo de vida oficial: reciben parches por Windows Update del programa Insider y caducan. Mantener Windows Update al dia; para maxima estabilidad usar una version publica."}
+    }
     $path=if($os.Caption -match 'Windows 11' -and $os.Edition -match '^(Core|Professional)'){'windows-11-home-and-pro'}elseif($os.Caption -match 'Windows 11' -and $os.Edition -match '^(Enterprise|Education)' -and $os.Edition -notmatch 'S$'){'windows-11-enterprise-and-education'}elseif($os.Caption -match 'Windows 10' -and $os.Edition -match '^(Core|Professional)'){'windows-10-home-and-pro'}else{$null}
     if(-not $path){return [pscustomobject]@{Status='Unknown';OS=$os;Detail='Edicion/canal LTSC o no catalogado. Licencias detectadas incluidas; requiere confirmar pagina especifica de producto.'}}
     $url='https://learn.microsoft.com/en-us/lifecycle/products/'+$path
@@ -77,14 +113,14 @@ function Get-SupportAssessment {
         $dates=[regex]::Matches($plain,'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}\b')
         if($dates.Count -ge 2){$end=[datetime]::Parse($dates[$dates.Count-1].Value,[Globalization.CultureInfo]::InvariantCulture);break}
     }
-    [pscustomobject]@{OS=$os;Source=$url;CheckedAt=[datetime]::UtcNow.ToString('o');EndDate=$end;Status=$(if($end){if([datetime]::Now -le $end){'InSupportUntil'}else{'StandardSupportEnded'}}else{'Unknown'});Detail='Fecha obtenida de tabla oficial para version/edicion. Si termina el soporte estandar, ESU requiere comprobar periodo/licencia aplicable; no se presupone cobertura.'}
+    [pscustomobject]@{OS=$os;Source=$url;CheckedAt=[datetime]::UtcNow.ToString('o');EndDate=$end;Status=$(if($end){if([datetime]::Now -le $end){'InSupportUntil'}else{'StandardSupportEnded'}}else{'Unknown'});Detail=$(if(-not $end){"La version $($os.DisplayVersion) (build $($os.Build)) no aparece en la tabla oficial. Si es una build Insider/Canary, unirse al programa queda registrado en Configuracion > Windows Update > Programa Windows Insider. "}else{''})+'Fecha obtenida de tabla oficial para version/edicion. Si termina el soporte estandar, ESU requiere comprobar periodo/licencia aplicable; no se presupone cobertura.'}
 }
 function Get-CveCorrelation($Report) {
     $updates=@(Get-CheckData $Report 'Updates');if(-not $updates.Count){throw 'Consultar primero Windows Update.'}
     $kbs=@($updates[0].Updates|ForEach-Object {$_.KB}|ForEach-Object {[string]$_})
     $kbSet=New-Object 'Collections.Generic.HashSet[string]'
     foreach($kb in $kbs){$kbSet.Add($kb)|Out-Null}
-    $matches=New-Object 'Collections.Generic.List[object]';$sources=@();$gaps=@()
+    $found=New-Object 'Collections.Generic.List[object]';$sources=@();$gaps=@()
     for($i=0;$i -lt 3;$i++){
         $month=[datetime]::UtcNow.AddMonths(-$i).ToString('yyyy-MMM',[Globalization.CultureInfo]::InvariantCulture)
         $url='https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/'+$month
@@ -95,12 +131,16 @@ function Get-CveCorrelation($Report) {
             foreach($v in $doc.Vulnerability){foreach($fix in $v.Remediations){foreach($article in [regex]::Matches([string]$fix.Description.Value,'(?<!\d)\d{6,8}(?!\d)')){
                 $kb=$article.Value
                 if($kbSet.Contains($kb)){
-                    $matches.Add([pscustomobject]@{CVE=$v.CVE;Title=$v.Title.Value;KB=$kb;Source=$url})
+                    $found.Add([pscustomobject]@{CVE=$v.CVE;Title=$v.Title.Value;KB=$kb;Source=$url})
                 }
             }}}
-        }catch{$gaps+=($url+': '+$_.Exception.Message)}
+        }catch{
+            # El boletin del mes en curso no existe hasta el segundo martes: no es una falta de cobertura.
+            if($i -eq 0 -and $_.Exception.Message -match '404|Not Found|no encontr'){continue}
+            $gaps+=($url+': '+$_.Exception.Message)
+        }
     }
-    [pscustomobject]@{Matches=@($matches.ToArray()|Sort-Object CVE,KB -Unique);Sources=$sources;Gaps=$gaps;Scope='Correlacion KB pendientes con CVRF Microsoft de los ultimos 3 meses. No cubre software tercero ni prueba explotabilidad; cero coincidencias no acredita ausencia de CVE.'}
+    [pscustomobject]@{Matches=@($found.ToArray()|Sort-Object CVE,KB -Unique);Sources=$sources;Gaps=$gaps;Scope='Correlacion KB pendientes con CVRF Microsoft de los ultimos 3 meses. No cubre software tercero ni prueba explotabilidad; cero coincidencias no acredita ausencia de CVE.'}
 }
 function Block-VerifiedListener([int]$Port,[int]$ProcessId,[string]$ExpectedProgram) {
     if(-not (Test-IsAdmin)){throw 'Requiere administrador para crear una regla de firewall.'}
@@ -127,6 +167,28 @@ function Undo-ListenerBlock([string]$Name) {
     Remove-NetFirewallRule -Name $Name -ErrorAction Stop
     if(Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue){throw 'La regla sigue presente.'}
 }
+function Write-NetworkTable($Network) {
+    $rows=@($Network.Listeners|Where-Object {$_.Scope -ne 'Loopback' -and -not $_.IsWindows})
+    $windows=@($Network.Listeners|Where-Object {$_.Scope -ne 'Loopback' -and $_.IsWindows})
+    $local=@($Network.Listeners|Where-Object Scope -eq 'Loopback')
+    if($rows.Count){
+        Write-Host ''
+        Write-Host 'Programas que aceptan conexiones desde otros equipos:'
+        Write-Host ('  {0,-3} {1,-24} {2,-7} {3,-22} {4}' -f 'N','Programa','Puerto','Abierto en','Comentario')
+        for($i=0;$i -lt $rows.Count;$i++){
+            $r=$rows[$i];$where=if($r.Scope -eq 'AllInterfaces'){'todas las redes'}else{'solo '+$r.Address}
+            $name=if($r.Process){[string]$r.Process}else{'PID '+$r.ProcessId}
+            if($name.Length -gt 24){$name=$name.Substring(0,23)+'~'}
+            $flag=if($r.Risk.Level -in @('Alert','Review')){'[!] '}else{''}
+            Write-Host ('  {0,-3} {1,-24} {2,-7} {3,-22} {4}{5}' -f ($i+1),$name,$r.Port,$where,$flag,$r.Risk.Text)
+        }
+    } else {Write-Host 'Ningun programa (fuera de Windows) acepta conexiones desde la red.'}
+    if($windows.Count){Write-Host ('Servicios de Windows abiertos a la red (normales): '+(($windows|ForEach-Object {"$($_.Process) $($_.Port)"}) -join ', '))}
+    if($local.Count){Write-Host "$($local.Count) escuchas solo locales (127.0.0.1/::1): no son accesibles desde otros equipos."}
+    $gw=@($Network.Routes|ForEach-Object {"$($_.NextHop) ($($_.InterfaceAlias))"})
+    if($gw.Count){Write-Host ('Salida a Internet por: '+($gw -join ', '))}
+    return $rows
+}
 function Show-NetworkInvestigation {
     try{$network=Get-NetworkInvestigation}catch{
         Write-Warning $_.Exception.Message
@@ -134,29 +196,62 @@ function Show-NetworkInvestigation {
         $read=Invoke-ElevatedSecurity 'NetworkRead' @{}
         if($read.Status -ne 'Checked'){throw $read.Detail};$network=$read.Data
     }
-    $network.Listeners|Format-Table Address,Port,ProcessId,Process,Scope,CanBlock -AutoSize|Out-Host
-    $network.Routes|Format-Table|Out-Host
-    Write-Host 'CanBlock permite proponer una regla reversible para ese programa y puerto. Puede afectar compartir archivos, juegos o servicios que uses.'
-    $portText=Read-Host 'Puerto a bloquear (Enter solo investigar)';$port=0
-    if(-not $portText){return $network}
-    if(-not [int]::TryParse($portText,[ref]$port)){throw 'Puerto invalido.'}
-    $matches=@($network.Listeners|Where-Object { $_.Port -eq $port -and $_.Scope -eq 'Network' -and $_.CanBlock }|Sort-Object ProcessId,Executable -Unique)
-    if($matches.Count -ne 1){throw 'Se requiere una escucha unica identificada; no se elige un proceso ambiguo.'}
-    $entry=$matches[0];Write-Host "$($entry.Process) - $($entry.Executable) - TCP $port"
+    $rows=@(Write-NetworkTable $network)
+    if(-not @($rows|Where-Object CanBlock).Count){return $network}
+    Write-Host 'Bloquear crea una regla de firewall reversible (opcion 8 > 5 la quita). Puede afectar juegos, compartir archivos o la app elegida.'
+    $answer=Read-Host "Numero de fila (N, 1 a $($rows.Count)) a bloquear. Enter = solo mirar"
+    if(-not $answer -or -not $answer.Trim()){return $network}
+    $n=0
+    # Se acepta el numero de fila. Si escribe un puerto que aparece en la tabla, se usa esa fila (el error anterior "escucha unica" confundia).
+    if([int]::TryParse($answer.Trim().TrimStart('#'),[ref]$n)){
+        $byPort=@($rows|Where-Object {[int]$_.Port -eq $n})
+        if($n -ge 1 -and $n -le $rows.Count){$entry=$rows[$n-1]}
+        elseif($byPort.Count -eq 1){$entry=$byPort[0]}
+        else{$entry=$null}
+    } else {$entry=$null}
+    if(-not $entry){Write-Warning "Escribir el numero de la columna N (1 a $($rows.Count)), no otro dato. No se cambio nada.";return $network}
+    if(-not $entry.CanBlock){Write-Warning ("No se ofrece bloqueo para $($entry.Process) puerto $($entry.Port): "+$entry.BlockNote);return $network}
+    Write-Host "$($entry.Process) - $($entry.Executable) - TCP $($entry.Port)"
     if(Confirm-Choice 'Crear regla reversible de bloqueo entrante?'){
-        $result=Invoke-ElevatedSecurity 'BlockListener' @{Port=$port;ProcessId=$entry.ProcessId;Program=$entry.Executable}
-        $network|Add-Member -MemberType NoteProperty -Name ActionResult -Value $result
-        $result|Format-List|Out-Host
+        try{$result=Invoke-ElevatedSecurity 'BlockListener' @{Port=[int]$entry.Port;ProcessId=[int]$entry.ProcessId;Program=$entry.Executable}}
+        catch{$result=[pscustomobject]@{Action='BlockListener';Status='Failed';Detail=$_.Exception.Message}}
+        $network|Add-Member -MemberType NoteProperty -Name ActionResult -Value $result -Force
+        Write-Host ("Resultado: $($result.Status). $($result.Detail)")
     }
     return $network
+}
+function Format-DeepResult($Id,$Result) {
+    if($Result.Status -ne 'Checked'){Write-Warning ((Get-CheckTitle $Id)+': '+$Result.Error);Write-Host ('  '+(Get-FailureAdvice $Id $Result.Error));return}
+    $d=@($Result.Data)|Select-Object -Last 1
+    switch($Id){
+        'NetworkInvestigation' {} # ya se mostro la tabla legible
+        'Router' {
+            if(-not $d.UPnPAvailable){Write-Host 'Router: no responde a UPnP. Los programas no pueden abrir puertos en el router por su cuenta (bien).'}
+            elseif(-not @($d.Mappings).Count){Write-Host 'Router: UPnP activo, sin puertos abiertos automaticamente ahora.'}
+            else{Write-Host 'Router: puertos abiertos hacia Internet por UPnP:';foreach($m in $d.Mappings){Write-Host ("  Internet:{0}/{1} -> {2}:{3}  {4}{5}" -f $m.ExternalPort,$m.Protocol,$m.InternalClient,$m.InternalPort,$m.Description,$(if($m.Enabled){''}else{' (deshabilitado)'}))}}
+        }
+        'Updates' {
+            $sec=@($d.Updates|Where-Object Security -eq $true)
+            Write-Host "Windows Update: $(@($d.Updates).Count) parches pendientes, $($sec.Count) de seguridad. Reinicio pendiente: $(if($d.RebootRequired){'si'}else{'no'})."
+            foreach($u in $d.Updates){Write-Host ('  - '+$u.Title)}
+            if($sec.Count){Write-Host '  Instalar con opcion 8 > 7 o desde Configuracion > Windows Update.'}
+        }
+        'Support' {Write-Host ("Soporte: $($d.Status). "+$(if($d.EndDate){"Fin: $($d.EndDate). "}else{''})+$d.Detail)}
+        'CVE' {
+            Write-Host "CVE: $(@($d.Matches).Count) vulnerabilidades Microsoft corregidas por parches que te faltan."
+            foreach($m in @($d.Matches|Select-Object -First 10)){Write-Host "  $($m.CVE) (KB$($m.KB)) $($m.Title)"}
+            if(@($d.Gaps).Count){Write-Warning ('Fuentes no consultadas: '+($d.Gaps -join '; '))}
+        }
+        'IOC' {Write-Host ("IOC: codigo $($d.ExitCode). "+($d.Verdict|ConvertTo-Json -Compress -Depth 3)+" Informe: $($d.EvidenceReport)")}
+        default {$d|Format-List|Out-Host}
+    }
 }
 function Add-DeepResult($Report,$Id,[scriptblock]$Read) {
     $result=Invoke-Check $Id $Read
     if($Id -eq 'PublicProbe'){ $prior=@($Report.Checks|Where-Object Id -eq $Id|ForEach-Object {$_.Data});$result.Data=@((@($prior)+@($result.Data))|Select-Object -Last 50) }
     $Report.Checks=@($Report.Checks|Where-Object Id -ne $Id)+@($result)
     Add-ReportAnalysis $Report|Out-Null
-    $result.Data|Format-List|Out-Host
-    if($result.Error){Write-Warning $result.Error}
+    Format-DeepResult $Id $result
 }
 function Show-DeepMenu($Report) {
     Write-Host '[1] Procesos, puertos, VPN y firewall / bloqueo reversible'
@@ -264,7 +359,9 @@ function Read-IocReport([string]$Path) {
     [pscustomobject]@{Engine='Zero-Breach-Toolkit';Schema=$doc.schema_version;ExitCode=$doc.exit_code;Verdict=$doc.verdict;Coverage=$doc.coverage;Caveats=$doc.must_relay;NextSteps=$doc.next_steps;EvidenceReport=$Path;Warning='Sin coincidencias no equivale a ausencia de compromiso. No borrar evidencia automaticamente.'}
 }
 function Invoke-IocScan {
-    if(Test-IsAdmin){throw 'Ejecutar el menu sin administrador para IOC; solo el helper de firewall debe elevarse. No se ejecuta Python de usuario con privilegios altos.'}
+    # La logica es correcta: si el proceso tiene token de administrador, no se lanza Python de usuario elevado.
+    # El fallo real era el mensaje: no explicaba POR QUE el menu estaba elevado (UAC desactivado o consola de administrador).
+    if(Test-IsAdmin){throw ('El analisis IOC no se ejecuta con permisos de administrador (seria correr Python de esta cuenta con control total). '+(Get-ElevationExplanation))}
     $exe=Get-KnownPython
     $scanner=Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party\zero-breach\scanner.py'
     if((Get-FileHash -LiteralPath $scanner -Algorithm SHA256).Hash -ne 'BB0E6A7A36EE659C0494D02E9F7495D5FD4701F1AB7E57529E79925CB581AE15'){throw 'Motor IOC alterado; se rechaza su ejecucion.'}
@@ -284,18 +381,77 @@ function Invoke-IocScan {
         if($rule){Invoke-ElevatedSecurity 'UndoIsolation' @{Rule=$rule}|Out-Host}
     }
 }
+$script:WorkerFiles=@('SecurityWorker.ps1','Centinela.ps1','Summary.ps1','DeepSecurity.ps1')
+$script:WorkerBootstrap=@'
+$ErrorActionPreference='Stop'
+$src='__SRC__';$id='__ID__';$payload='__PAYLOAD__';$manifest=[ordered]@{__MANIFEST__}
+$sha=[Security.Cryptography.SHA256]::Create();$files=@{}
+foreach($name in $manifest.Keys){
+    $bytes=[IO.File]::ReadAllBytes((Join-Path $src $name))
+    if((-join($sha.ComputeHash($bytes)|ForEach-Object {$_.ToString('X2')})) -ne $manifest[$name]){throw "Archivo alterado antes de elevar: $name. No se ejecuto nada."}
+    $files[$name]=$bytes
+}
+$sys='S-1-5-18';$adm='S-1-5-32-544'
+function Lock-CentinelaFolder([string]$Path){
+    if(Test-Path -LiteralPath $Path){$i=Get-Item -LiteralPath $Path -Force;if(-not $i.PSIsContainer -or ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw "Carpeta protegida invalida: $Path"}}else{New-Item -ItemType Directory -Path $Path|Out-Null}
+    $acl=New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier $adm));$acl.SetAccessRuleProtection($true,$false)
+    $inh=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';$none=[Security.AccessControl.PropagationFlags]::None
+    foreach($s in @($sys,$adm)){$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $s),'FullControl',$inh,$none,'Allow')))}
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545'),'ReadAndExecute',$inh,$none,'Allow')))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+$root=Join-Path $env:ProgramData 'Centinela'
+if(Test-Path -LiteralPath $root){if((Get-Acl -LiteralPath $root).GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($sys,$adm)){Remove-Item -LiteralPath $root -Recurse -Force}}
+Lock-CentinelaFolder $root;$base=Join-Path $root 'worker';Lock-CentinelaFolder $base
+Get-ChildItem -LiteralPath $base -Directory|Where-Object {$_.LastWriteTime -lt (Get-Date).AddHours(-1)}|Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+$dst=Join-Path $base $id;New-Item -ItemType Directory -Path $dst|Out-Null
+foreach($name in $files.Keys){[IO.File]::WriteAllBytes((Join-Path $dst $name),$files[$name])}
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+& (Join-Path $dst 'SecurityWorker.ps1') -Payload $payload
+'@
+function Get-WorkerManifest([string]$Folder=$PSScriptRoot) {
+    $m=[ordered]@{}
+    foreach($f in $script:WorkerFiles){$m[$f]=(Get-FileHash -LiteralPath (Join-Path $Folder $f) -Algorithm SHA256).Hash.ToUpperInvariant()}
+    return $m
+}
+function New-WorkerBootstrap([string]$Source,[string]$Id,[string]$Payload,$Manifest) {
+    if($Id -notmatch '^[a-f0-9]{32}$' -or $Payload -notmatch '^[A-Za-z0-9+/=]+$'){throw 'Solicitud invalida.'}
+    $pairs=foreach($k in $Manifest.Keys){if($k -notin $script:WorkerFiles -or $Manifest[$k] -notmatch '^[A-F0-9]{64}$'){throw 'Manifiesto invalido.'};"'$k'='$($Manifest[$k])'"}
+    return $script:WorkerBootstrap.Replace('__SRC__',$Source.Replace("'","''")).Replace('__ID__',$Id).Replace('__PAYLOAD__',$Payload).Replace('__MANIFEST__',($pairs -join ';'))
+}
+function Get-WorkerResultPath([string]$Id) { Join-Path (Join-Path (Join-Path (Join-Path $env:ProgramData 'Centinela') 'worker') $Id) 'result.json' }
+function Read-WorkerResult([string]$Path,[string]$Id,[string]$Action,[int]$MaxBytes=2MB) {
+    # Solo datos: tamano acotado, JSON, esquema/Id/Accion exactos. Nunca se ejecuta nada del archivo.
+    $base=[IO.Path]::GetFullPath((Join-Path (Join-Path $env:ProgramData 'Centinela') 'worker'))
+    $full=[IO.Path]::GetFullPath($Path)
+    if(-not $full.StartsWith($base+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)){throw 'Resultado fuera de la carpeta protegida.'}
+    if(-not (Test-Path -LiteralPath $full -PathType Leaf)){throw 'Sin resultado verificable de la operacion elevada.'}
+    $item=Get-Item -LiteralPath $full -Force
+    if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Resultado con enlace no permitido.'}
+    if($item.Length -gt $MaxBytes -or $item.Length -eq 0){throw 'Resultado con tamano invalido.'}
+    if(Get-Command Get-Acl -ErrorAction SilentlyContinue){
+        $owner=(Get-Acl -LiteralPath $full).GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if($owner -notin @('S-1-5-18','S-1-5-32-544') -and $owner -ne (Get-Identity)){throw 'Resultado con propietario no confiable.'}
+    }
+    try{$doc=[IO.File]::ReadAllText($full)|ConvertFrom-Json}catch{throw 'Resultado ilegible (JSON invalido).'}
+    if($doc -isnot [pscustomobject] -or $doc.Schema -ne 'Centinela.WorkerResult.1' -or $doc.Id -ne $Id -or $doc.Action -ne $Action -or $doc.Result -isnot [pscustomobject] -or $doc.Result.Status -isnot [string] -or $doc.Result.Status -notmatch '^[A-Za-z]{1,40}$'){throw 'Resultado con formato inesperado; se descarta.'}
+    return $doc.Result
+}
 function Invoke-ElevatedSecurity([string]$Action,$Arguments) {
     if($Action -notin @('BlockListener','UndoBlock','IsolatePython','UndoIsolation','InstallSecurityUpdates','EnableRealtime','UpdateSignatures','QuickScan','NetworkRead')){throw 'Accion privilegiada no permitida.'}
-    $id=[guid]::NewGuid().ToString('N')
-    $payload=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((@{Action=$Action;Arguments=$Arguments;Sid=(Get-Identity);Id=$id}|ConvertTo-Json -Compress)))
-    $worker=Join-Path $PSScriptRoot 'SecurityWorker.ps1';$resultPath=Join-Path (Get-StateFolder) ('worker-'+$id+'.json')
-    if(Test-IsAdmin){& $worker -Payload $payload}else{
+    $id=[guid]::NewGuid().ToString('N');$manifest=Get-WorkerManifest $PSScriptRoot
+    $payload=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((@{Action=$Action;Arguments=$Arguments;Sid=(Get-Identity);Id=$id;Manifest=$manifest}|ConvertTo-Json -Compress)))
+    $bootstrap=New-WorkerBootstrap $PSScriptRoot $id $payload $manifest
+    if(Test-IsAdmin){& ([scriptblock]::Create($bootstrap))}else{
+        $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
+        if($encoded.Length -gt 30000){throw 'Solicitud demasiado grande para elevar.'}
         $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $child=Start-Process -FilePath $ps -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$worker+'"'),'-Payload',$payload) -PassThru -Wait
-        if($child.ExitCode -ne 0){throw 'La operacion elevada fallo o fue cancelada.'}
+        # Sin -File ni -ExecutionPolicy Bypass sobre la carpeta del usuario: el bloque verifica hashes, copia a ProgramData protegido y corre desde ahi.
+        $child=Start-Process -FilePath $ps -Verb RunAs -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -PassThru -Wait
+        if($child.ExitCode -ne 0){throw 'La operacion elevada fallo, fue cancelada o detecto archivos alterados.'}
     }
-    if(-not (Test-Path -LiteralPath $resultPath)){throw 'Sin resultado verificable de la operacion elevada.'}
-    Get-Content -LiteralPath $resultPath -Raw|ConvertFrom-Json
+    Read-WorkerResult (Get-WorkerResultPath $id) $id $Action
 }
 function Install-SelectedSecurityUpdates($Ids) {
     $approved=@($Ids)

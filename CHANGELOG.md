@@ -1,5 +1,23 @@
 # Cambios
 
+## 0.3.1-rc.1
+
+- Resumen con veredicto unico: SEGURA / REVISAR / EN RIESGO y una frase simple.
+- Puertos: se descartan PID 0 y filas efimeras; cruce con la lista real de .NET.
+- Puertos sensibles (PostgreSQL, MySQL, RDP, SMB, Docker...) abiertos a la red se marcan aparte.
+- UPnP e IOC explican el motivo real cuando no se pueden completar.
+- Tabla de red legible: acepta numero de fila o puerto; un error no borra la investigacion.
+- Nueva comprobacion de UAC y aviso cuando se ejecuta como administrador.
+- Deteccion de compilaciones Insider; un 404 del mes en curso de MSRC ya no cuenta como hueco.
+- Exportaciones con contrasenas/tokens redactados.
+- Ayudante elevado endurecido: se calculan los SHA256 de sus 4 scripts antes de pedir UAC; el proceso elevado
+  (via -EncodedCommand, sin -File ni Bypass sobre la carpeta del usuario) vuelve a verificarlos, los copia a
+  %ProgramData%\Centinela\worker con permisos solo para Administradores/SYSTEM y corre desde ahi. El worker
+  re-verifica ubicacion, hashes y ACL al iniciar y se niega si algo no coincide.
+- Resultado del ayudante: se escribe en la carpeta protegida y se valida (ruta, tamano max. 2 MB, propietario,
+  esquema, Id y accion) antes de usarlo; nunca se ejecuta.
+- Nuevas pruebas tests/worker.tests.ps1 y tests/audit.tests.ps1 (tambien en CI).
+
 ## 0.3.0-rc.1
 
 - Investigacion de procesos/puertos/rutas y reglas, con bloqueo reversible especifico.

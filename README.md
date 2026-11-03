@@ -1,4 +1,4 @@
-# El Centinela de Windows 0.3.0-rc.1
+# El Centinela de Windows 0.3.1-rc.1
 
 Mantenimiento y seguridad de Windows por usuario. Extraer el ZIP completo y abrir El Centinela de Windows.bat. Requiere PowerShell 5.1; el menu normal no pide administrador.
 

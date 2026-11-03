@@ -1,11 +1,28 @@
 param([Parameter(Mandatory=$true)][string]$Payload)
 $ErrorActionPreference='Stop'
-$env:PSModulePath=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
-. (Join-Path $PSScriptRoot 'Centinela.ps1') -LibraryOnly
+$env:PSModulePath=[IO.Path]::Combine($env:SystemRoot,'System32\WindowsPowerShell\v1.0\Modules')
 if($Payload.Length -gt 16384){throw 'Solicitud demasiado grande.'}
 $request=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Payload))|ConvertFrom-Json
-if($request.Action -isnot [string] -or $request.Arguments -isnot [pscustomobject] -or $request.Id -notmatch '^[a-f0-9]{32}$' -or $request.Sid -ne (Get-Identity) -or -not (Test-IsAdmin)){throw 'Identidad, permiso o solicitud invalida. Usar la misma cuenta al elevar.'}
-$path=Join-Path (Get-StateFolder) ('worker-'+$request.Id+'.json')
+if($request.Id -notmatch '^[a-f0-9]{32}$' -or $null -eq $request.Manifest){throw 'Solicitud invalida.'}
+# Re-verificacion al iniciar (antes de cargar cualquier otro script): ubicacion protegida, hashes y permisos.
+$expected=[IO.Path]::GetFullPath((Join-Path (Join-Path (Join-Path $env:ProgramData 'Centinela') 'worker') $request.Id))
+if([IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\','/') -ne $expected.TrimEnd('\','/')){throw 'El ayudante elevado solo corre desde su copia protegida en ProgramData.'}
+$sha=[Security.Cryptography.SHA256]::Create()
+foreach($name in @('SecurityWorker.ps1','Centinela.ps1','Summary.ps1','DeepSecurity.ps1')){
+    $want=[string]$request.Manifest.$name
+    $got=-join($sha.ComputeHash([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot $name)))|ForEach-Object {$_.ToString('X2')})
+    if($want -notmatch '^[A-F0-9]{64}$' -or $got -ne $want){throw "Archivo alterado: $name. No se ejecuto nada."}
+}
+$trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+$acl=Get-Acl -LiteralPath $PSScriptRoot
+if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted){throw 'Carpeta del ayudante con propietario no confiable.'}
+$writeMask=[int]([Security.AccessControl.FileSystemRights]'Write,Delete,ChangePermissions,TakeOwnership,DeleteSubdirectoriesAndFiles')
+foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){
+    if($rule.AccessControlType -eq 'Allow' -and ([int]$rule.FileSystemRights -band $writeMask) -and $rule.IdentityReference.Value -notin $trusted){throw 'Carpeta del ayudante escribible por cuentas no administradoras.'}
+}
+. (Join-Path $PSScriptRoot 'Centinela.ps1') -LibraryOnly
+if($request.Action -isnot [string] -or $request.Arguments -isnot [pscustomobject] -or $request.Sid -ne (Get-Identity) -or -not (Test-IsAdmin)){throw 'Identidad, permiso o solicitud invalida. Usar la misma cuenta al elevar.'}
+$path=Join-Path $PSScriptRoot 'result.json'
 try { switch($request.Action){
     'NetworkRead' {$result=@{Status='Checked';Data=(Get-NetworkInvestigation)}}
     {$_ -in @('EnableRealtime','UpdateSignatures','QuickScan')} {$result=Invoke-SecuritySolution $request.Action}
@@ -28,8 +45,8 @@ try { switch($request.Action){
     }
     default {throw 'Accion no permitida.'}
 }
-Save-Journal $result $path
+Save-Journal @{Schema='Centinela.WorkerResult.1';Id=$request.Id;Action=$request.Action;Result=$result} $path
 } catch {
     if($name -and $name -match '^Centinela-IOC-[a-f0-9]{32}$'){Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue}
-    Save-Journal @{Action=$request.Action;Status='Failed';Detail=$_.Exception.Message} $path
+    Save-Journal @{Schema='Centinela.WorkerResult.1';Id=$request.Id;Action=$request.Action;Result=@{Action=$request.Action;Status='Failed';Detail=$_.Exception.Message}} $path
 }

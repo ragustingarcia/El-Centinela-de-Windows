@@ -1,6 +1,6 @@
 ﻿param([switch]$LibraryOnly, [switch]$Audit, [string]$ReportPath)
 $ErrorActionPreference = 'Stop'
-$script:Version = '0.3.0-rc.1'
+$script:Version = '0.3.1-rc.1'
 $script:PrivacyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
 $script:PrivacyNames = @('SubscribedContent-338388Enabled','SubscribedContent-338389Enabled','SubscribedContent-353698Enabled','SystemPaneSuggestionsEnabled','SilentInstalledAppsEnabled','PreInstalledAppsEnabled','OemPreInstalledAppsEnabled','RotatingLockScreenOverlayEnabled','SoftLandingEnabled')
 function Confirm-Choice($Question) {
@@ -157,6 +157,32 @@ function Invoke-TempPlan($Plan) {
     }
     return [pscustomobject]@{ Deleted=$deleted; Skipped=$skipped; Bytes=$bytes; Reversible=$false }
 }
+function Get-DotNetTcpListeners {
+    # Fuente independiente de CIM (GetTcpTable con estado LISTEN). Se usa para descartar filas que
+    # Get-NetTCPConnection marque como Listen sin serlo (visto en builds Insider: PID 0, puertos efimeros).
+    foreach($e in [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()){ ($e.Address.ToString() -replace '%.*$','')+'|'+$e.Port }
+}
+function Get-ListeningSockets {
+    $real=$null
+    try{$real=New-Object 'Collections.Generic.HashSet[string]';foreach($k in @(Get-DotNetTcpListeners)){$real.Add([string]$k)|Out-Null}}catch{$real=$null}
+    foreach($c in @(Get-NetTCPConnection -State Listen -ErrorAction Stop)){
+        if([int]$c.OwningProcess -le 0){continue} # PID 0 = System Idle Process: conexiones cerradas/TIME_WAIT, nunca una escucha real.
+        if($c.RemoteAddress -and [string]$c.RemoteAddress -notin @('0.0.0.0','::')){continue}
+        if($c.RemotePort -and [int]$c.RemotePort -ne 0){continue}
+        if($real -and $real.Count -and -not $real.Contains((([string]$c.LocalAddress) -replace '%.*$','')+'|'+$c.LocalPort)){continue}
+        $c
+    }
+}
+function Get-UacStatus {
+    $p=Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction Stop
+    [pscustomobject]@{EnableLUA=$p.EnableLUA;ConsentPromptBehaviorAdmin=$p.ConsentPromptBehaviorAdmin;PromptOnSecureDesktop=$p.PromptOnSecureDesktop;ProcessElevated=[bool](Test-IsAdmin)}
+}
+function Get-ElevationExplanation {
+    $uac=$null;try{$uac=Get-UacStatus}catch{}
+    if($uac -and $uac.EnableLUA -eq 0){return 'El Control de cuentas de usuario (UAC) esta desactivado: Windows abre todos los programas como administrador. Activarlo (ver resumen, opcion 1) y reiniciar.'}
+    if($uac -and $uac.ConsentPromptBehaviorAdmin -eq 0){return 'UAC esta configurado para elevar sin preguntar: los programas de esta cuenta reciben permisos de administrador sin aviso. Subir UAC al nivel predeterminado.'}
+    return 'Esta ventana se abrio como administrador (por ejemplo "Ejecutar como administrador" o una terminal elevada). Cerrarla y abrir "El Centinela de Windows.bat" con doble clic normal.'
+}
 function Invoke-Check($Id,[scriptblock]$Read) {
     $watch=[Diagnostics.Stopwatch]::StartNew()
     try { $data=@(& $Read); return [pscustomobject]@{ Id=$Id; Status='Checked'; CheckedAt=[datetime]::UtcNow.ToString('o'); Data=$data; Error=$null; Seconds=$watch.Elapsed.TotalSeconds } }
@@ -169,7 +195,8 @@ function Get-SecurityReport($PreviousReport) {
         Invoke-Check 'AntivirusProviders' { Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -OperationTimeoutSec 15 | Select-Object displayName,productState }
         Invoke-Check 'AntivirusHealth' { Get-AntivirusHealth }
         Invoke-Check 'Firewall' { Get-NetFirewallProfile -PolicyStore ActiveStore | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction }
-        Invoke-Check 'ListeningTCP' { Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess }
+        Invoke-Check 'UAC' { Get-UacStatus }
+        Invoke-Check 'ListeningTCP' { $names=@{};foreach($p in @(Get-Process -ErrorAction SilentlyContinue)){$names[[int]$p.Id]=$p.ProcessName}; Get-ListeningSockets | Select-Object LocalAddress,LocalPort,OwningProcess,@{n='Process';e={$names[[int]$_.OwningProcess]}} }
         Invoke-Check 'RunCurrentUser' { if(Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'){Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' | Select-Object * -ExcludeProperty PS*} }
         Invoke-Check 'Tasks' { Get-ScheduledTask | Select-Object TaskPath,TaskName,State,@{n='Actions';e={@($_.Actions | Select-Object Execute,Arguments)}} }
         Invoke-Check 'Services' { Get-CimInstance Win32_Service -OperationTimeoutSec 15 | Where-Object StartMode -eq Auto | Select-Object Name,State,PathName }
@@ -184,61 +211,65 @@ function Get-SecurityReport($PreviousReport) {
 function Export-Report($Report,[string]$Path) {
     Test-LocalPath $Path | Out-Null
     $stream=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
-    try { $bytes=[Text.Encoding]::UTF8.GetBytes(($Report|ConvertTo-Json -Depth 10));$stream.Write($bytes,0,$bytes.Length) } finally { $stream.Dispose() }
+    try { $bytes=[Text.Encoding]::UTF8.GetBytes((Protect-ExportText ($Report|ConvertTo-Json -Depth 10)));$stream.Write($bytes,0,$bytes.Length) } finally { $stream.Dispose() }
 }
 . (Join-Path $PSScriptRoot 'Summary.ps1')
 . (Join-Path $PSScriptRoot 'DeepSecurity.ps1')
+function Start-CentinelaMenu {
+    Write-Host "El Centinela de Windows $script:Version - usuario: $(try{[Security.Principal.WindowsIdentity]::GetCurrent().Name}catch{[Environment]::UserName})"
+    Write-Host 'Los cambios afectan esta cuenta. Ejecutar desde su sesion habitual; no requiere administrador. Cerrar instaladores antes de limpiar.'
+    try{if(Test-IsAdmin){Write-Warning ('Centinela esta corriendo CON permisos de administrador. '+(Get-ElevationExplanation)+' El analisis IOC (8 > 6) no se ejecuta asi.')}}catch{}
+    while ($true) {
+        Show-MainMenu
+        $choice=Read-Host 'Opcion'
+        if (-not $choice -or $choice -eq '0') { return }
+        try {
+            switch ($choice) {
+                '1' {
+                    $script:LastReport=Get-SecurityReport $script:LastReport; Show-Report $script:LastReport
+                    $follow=Read-Host '[E] Exportar al Escritorio / [S] Soluciones / [D] Detalle / Enter menu'
+                    switch(([string]$follow).ToUpperInvariant()) {
+                        'E' { Write-Host (Export-DesktopReport $script:LastReport) }
+                        'S' { Show-Solutions $script:LastReport }
+                        'D' { Show-Details $script:LastReport }
+                    }
+                }
+                '2' {
+                    $plan=@(New-PrivacyPlan); $plan | Format-Table Name,Before,After | Out-Host
+                    Write-Host 'Ajustes de sugerencias por usuario; no modifica GPO/MDM ni garantiza persistencia tras actualizaciones. Conserva fotos de Spotlight. Puede requerir cerrar sesion.'
+                    if ($plan.Count -and (Confirm-Choice 'Aplicar estos cambios con respaldo?')) {
+                        $folder=Get-StateFolder; $path=Join-Path $folder ('privacy-'+[guid]::NewGuid().ToString('N')+'.json')
+                        $result=Invoke-PrivacyPlan $plan $path
+                        $result.Entries | Format-Table Name,Status | Out-Host; Write-Host "Respaldo: $path"
+                    }
+                }
+                '3' {
+                    $plan=@(Get-TempPlan); $plan | Format-Table Path,Length | Out-Host
+                    Write-Host "$($plan.Count) archivos de mas de 14 dias. El borrado es permanente; no tiene deshacer. Solo Temp de esta cuenta; nunca carpetas completas."
+                    if ($plan.Count -and (Confirm-Choice 'Eliminar exactamente los archivos listados?')) { Invoke-TempPlan $plan | Format-List | Out-Host }
+                }
+                '4' {
+                    $folder=Get-StateFolder; $files=@(Get-ChildItem -LiteralPath $folder -Filter 'privacy-*.json' -File | Sort-Object LastWriteTime -Descending)
+                    for($i=0;$i -lt $files.Count;$i++){Write-Host "[$i] $($files[$i].Name) $($files[$i].LastWriteTime)"}
+                    $index=Read-Host 'Numero de respaldo (Enter cancela)'; $number=0
+                    if ($index -ne '' -and [int]::TryParse($index,[ref]$number) -and $number -ge 0 -and $number -lt $files.Count -and (Confirm-Choice 'Restaurar ajustes de este respaldo?')) { (Undo-Privacy $files[$number].FullName).Entries | Format-Table Name,Status | Out-Host }
+                }
+                '5' {
+                    if(-not $script:LastReport){Write-Host 'Primero ejecutar opcion 1.';continue}
+                    Write-Host 'Se guardaran resumen TXT y detalle JSON del mismo diagnostico, con advertencias y acciones. El Escritorio puede estar sincronizado y el informe contiene datos privados.'
+                    if(Confirm-Choice 'Exportar al Escritorio?'){Write-Host (Export-DesktopReport $script:LastReport)}
+                }
+                '6' {if($script:LastReport){Show-Details $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
+                '8' {if($script:LastReport){Show-DeepMenu $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
+                '7' {if($script:LastReport){Show-Solutions $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
+            }
+        } catch { Write-Warning $_.Exception.Message }
+    }
+}
 if ($LibraryOnly) { return }
 if ($Audit) {
     $report=Get-SecurityReport; Show-Report $report
     if ($ReportPath) { Export-Report $report $ReportPath }
     return
 }
-Write-Host "El Centinela de Windows $script:Version - usuario: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
-Write-Host 'Los cambios afectan esta cuenta. Ejecutar desde su sesion habitual; no requiere administrador. Cerrar instaladores antes de limpiar.'
-while ($true) {
-    Show-MainMenu
-    $choice=Read-Host 'Opcion'
-    if (-not $choice -or $choice -eq '0') { return }
-    try {
-        switch ($choice) {
-            '1' {
-                $script:LastReport=Get-SecurityReport $script:LastReport; Show-Report $script:LastReport
-                $follow=Read-Host '[E] Exportar al Escritorio / [S] Soluciones / [D] Detalle / Enter menu'
-                switch(([string]$follow).ToUpperInvariant()) {
-                    'E' { Write-Host (Export-DesktopReport $script:LastReport) }
-                    'S' { Show-Solutions $script:LastReport }
-                    'D' { Show-Details $script:LastReport }
-                }
-            }
-            '2' {
-                $plan=@(New-PrivacyPlan); $plan | Format-Table Name,Before,After | Out-Host
-                Write-Host 'Ajustes de sugerencias por usuario; no modifica GPO/MDM ni garantiza persistencia tras actualizaciones. Conserva fotos de Spotlight. Puede requerir cerrar sesion.'
-                if ($plan.Count -and (Confirm-Choice 'Aplicar estos cambios con respaldo?')) {
-                    $folder=Get-StateFolder; $path=Join-Path $folder ('privacy-'+[guid]::NewGuid().ToString('N')+'.json')
-                    $result=Invoke-PrivacyPlan $plan $path
-                    $result.Entries | Format-Table Name,Status | Out-Host; Write-Host "Respaldo: $path"
-                }
-            }
-            '3' {
-                $plan=@(Get-TempPlan); $plan | Format-Table Path,Length | Out-Host
-                Write-Host "$($plan.Count) archivos de mas de 14 dias. El borrado es permanente; no tiene deshacer. Solo Temp de esta cuenta; nunca carpetas completas."
-                if ($plan.Count -and (Confirm-Choice 'Eliminar exactamente los archivos listados?')) { Invoke-TempPlan $plan | Format-List | Out-Host }
-            }
-            '4' {
-                $folder=Get-StateFolder; $files=@(Get-ChildItem -LiteralPath $folder -Filter 'privacy-*.json' -File | Sort-Object LastWriteTime -Descending)
-                for($i=0;$i -lt $files.Count;$i++){Write-Host "[$i] $($files[$i].Name) $($files[$i].LastWriteTime)"}
-                $index=Read-Host 'Numero de respaldo (Enter cancela)'; $number=0
-                if ($index -ne '' -and [int]::TryParse($index,[ref]$number) -and $number -ge 0 -and $number -lt $files.Count -and (Confirm-Choice 'Restaurar ajustes de este respaldo?')) { (Undo-Privacy $files[$number].FullName).Entries | Format-Table Name,Status | Out-Host }
-            }
-            '5' {
-                if(-not $script:LastReport){Write-Host 'Primero ejecutar opcion 1.';continue}
-                Write-Host 'Se guardaran resumen TXT y detalle JSON del mismo diagnostico, con advertencias y acciones. El Escritorio puede estar sincronizado y el informe contiene datos privados.'
-                if(Confirm-Choice 'Exportar al Escritorio?'){Write-Host (Export-DesktopReport $script:LastReport)}
-            }
-            '6' {if($script:LastReport){Show-Details $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
-            '8' {if($script:LastReport){Show-DeepMenu $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
-            '7' {if($script:LastReport){Show-Solutions $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
-        }
-    } catch { Write-Warning $_.Exception.Message }
-}
+Start-CentinelaMenu

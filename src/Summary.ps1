@@ -1,3 +1,9 @@
+$script:CheckTitles=@{Windows='Version de Windows';Defender='Microsoft Defender';AntivirusProviders='Proveedores antivirus';AntivirusHealth='Salud del antivirus';Firewall='Firewall de Windows';UAC='Control de cuentas (UAC)';ListeningTCP='Puertos abiertos';RunCurrentUser='Programas de inicio';Tasks='Tareas programadas';Services='Servicios';Apps='Aplicaciones';Privacy='Preferencias de publicidad';NetworkInvestigation='Red, procesos y puertos';Router='Router (UPnP)';Support='Soporte de Windows';Updates='Parches Windows';CVE='Correlacion CVE Microsoft';IOC='Indicadores de compromiso';ExternalProbe='Prueba externa importada';PublicProbe='Prueba externa mediante servicio'}
+$script:AdvancedIds=@('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe','PublicProbe')
+# Puertos cuya apertura a la red merece explicacion propia. Clave: puerto; valor: nombre y si es base de datos/administracion.
+$script:SensitivePorts=@{21='FTP';22='SSH (acceso remoto)';23='Telnet (acceso remoto sin cifrar)';1433='Base de datos SQL Server';1521='Base de datos Oracle';2375='API de Docker sin cifrar';2376='API de Docker';3306='Base de datos MySQL/MariaDB';3389='Escritorio remoto';5432='Base de datos PostgreSQL';5900='VNC (control remoto)';5938='TeamViewer';5985='WinRM (administracion remota)';5986='WinRM (administracion remota)';6379='Base de datos Redis';8080='Servidor web de desarrollo';9200='Elasticsearch';11211='Memcached';27017='Base de datos MongoDB'}
+$script:WindowsProcessNames=@('System','svchost','svchost.exe','lsass','lsass.exe','wininit','wininit.exe','services','services.exe','spoolsv','spoolsv.exe','MsMpEng','MsMpEng.exe','NisSrv','NisSrv.exe','SearchIndexer','SearchIndexer.exe','msdtc','msdtc.exe','Idle','Registry')
+function Get-CheckTitle($Id) { if($script:CheckTitles.ContainsKey([string]$Id)){return $script:CheckTitles[[string]$Id]}; return [string]$Id }
 function Get-CheckData($Report,$Id) {
     $check=@($Report.Checks | Where-Object Id -eq $Id)
     if ($check.Count -eq 1 -and $check[0].Status -eq 'Checked') { return $check[0].Data }
@@ -11,10 +17,43 @@ function Convert-ObservedDate($Value) {
     if([datetime]::TryParse([string]$Value,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$date)){return $date}
     return [datetime]::MinValue
 }
+function Get-FailureAdvice($Id,$ErrorText) {
+    $e=[string]$ErrorText
+    if($e -match 'UPnP|router'){return 'El router no respondio por UPnP. Suele significar UPnP desactivado (es lo recomendable). Las redirecciones manuales solo se ven en la configuracion del router.'}
+    if($e -match 'Tiempo|timeout|agotado'){return 'La consulta tardo demasiado. Repetir mas tarde o con mejor conexion.'}
+    if($e -match '(?i)denegado|denied|acceso|permis|administrador|0x80070005'){return 'Faltan permisos. Repetir y aceptar el aviso de Windows (UAC) si aparece.'}
+    if($e -match '(?i)red|network|internet|resolver|remote name|conex'){return 'Sin conexion con el servicio consultado. Revisar Internet y repetir.'}
+    if($Id -in $script:AdvancedIds){return 'Repetir desde la opcion 8.'}
+    return 'Repetir el diagnostico (opcion 1).'
+}
+function Get-ListenerScope($Address) {
+    $a=[string]$Address
+    if($a -eq '::1' -or $a -match '^127\.'){return 'Loopback'}
+    if($a -in @('0.0.0.0','::')){return 'AllInterfaces'}
+    return 'SingleInterface'
+}
+function Test-WindowsListener($Process,$Executable,$ProcessId) {
+    if([int]$ProcessId -eq 4){return $true}
+    if($Executable -and $env:SystemRoot -and ([string]$Executable).StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){return $true}
+    return (-not $Executable -and [string]$Process -in $script:WindowsProcessNames)
+}
+function Get-ListenerRisk($Port,$Scope,$IsSystemService) {
+    # Devuelve nivel y explicacion corta en lenguaje llano.
+    $name=$script:SensitivePorts[[int]$Port]
+    if($IsSystemService){return [pscustomobject]@{Level='Info';Text='Servicio de Windows; normal en la mayoria de las PCs.'}}
+    if($name){
+        $lvl=if([int]$Port -eq 2375){'Alert'}else{'Review'}
+        $where=if($Scope -eq 'AllInterfaces'){'cualquier equipo de tu red (o de un Wi-Fi publico)'}else{'otros equipos de esa red'}
+        return [pscustomobject]@{Level=$lvl;Name=$name;Text="$name abierta a la red: $where puede intentar conectarse. Si solo la usas en esta PC, configurala para escuchar en localhost (127.0.0.1) o bloquea el puerto."}
+    }
+    if($Scope -eq 'SingleInterface' -and [int]$Port -ge 49152){return [pscustomobject]@{Level='Info';Text='Puerto temporal de la aplicacion; cambia en cada inicio.'}}
+    if($Scope -eq 'AllInterfaces'){return [pscustomobject]@{Level='Review';Text='Abierto en todas las redes. Normal en juegos, chat o compartir; revisar si no reconoces el programa.'}}
+    return [pscustomobject]@{Level='Info';Text='Abierto solo en la red local actual.'}
+}
 function Get-ReportAnalysis($Report) {
     $findings=New-Object 'Collections.Generic.List[object]'
     foreach($check in $Report.Checks) {
-        if($check.Status -ne 'Checked') { $action=if($check.Id -in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe','PublicProbe')){'DeepChecks'}else{''};$findings.Add((New-Finding 'Unknown' $check.Id ('No se pudo comprobar: '+$check.Error) $action 'Revisar permisos y repetir la comprobacion desde su menu.')) }
+        if($check.Status -ne 'Checked') { $action=if($check.Id -in $script:AdvancedIds){'DeepChecks'}else{''};$findings.Add((New-Finding 'Unknown' (Get-CheckTitle $check.Id) ('No se pudo comprobar: '+$check.Error) $action (Get-FailureAdvice $check.Id $check.Error))) }
     }
     $d=@(Get-CheckData $Report 'Defender')
     if($d.Count) {
@@ -54,34 +93,61 @@ function Get-ReportAnalysis($Report) {
     } elseif(@($Report.Checks|Where-Object { $_.Id -eq 'Firewall' -and $_.Status -eq 'Checked' }).Count) {
         $findings.Add((New-Finding 'Unknown' 'Firewall' 'La consulta termino sin devolver perfiles; no acredita proteccion.'))
     }
-    $listeners=@(Get-CheckData $Report 'ListeningTCP')
-    $nonlocal=@($listeners|Where-Object { $_.LocalAddress -and $_.LocalAddress -ne '::1' -and $_.LocalAddress -notmatch '^127\.' })
-    if($nonlocal.Count){$findings.Add((New-Finding 'Review' 'Servicios escuchando en interfaces de red' ("$($nonlocal.Count) escuchas fuera de loopback. Su alcance depende de firewall, router y red; no prueban exposicion a Internet.") 'InspectNetwork' 'Investigar procesos, rutas y reglas. Permite proponer bloqueo reversible del programa/puerto identificado.'))}
+    $uac=@(Get-CheckData $Report 'UAC')
+    if($uac.Count){
+        $u=$uac[0]
+        if($u.EnableLUA -eq 0){$findings.Add((New-Finding 'Alert' 'Control de cuentas (UAC) desactivado' 'Todo programa que abras corre como administrador: un programa malicioso tendria control total de Windows sin pedir permiso.' '' 'Panel de control > Cuentas de usuario > Cambiar configuracion de Control de cuentas de usuario: nivel predeterminado. Reiniciar.'))}
+        elseif($u.ConsentPromptBehaviorAdmin -eq 0){$findings.Add((New-Finding 'Alert' 'UAC eleva sin preguntar' 'Los programas reciben permisos de administrador sin ningun aviso.' '' 'Subir UAC al nivel predeterminado en Cambiar configuracion de Control de cuentas de usuario.'))}
+        elseif($u.PromptOnSecureDesktop -eq 0){$findings.Add((New-Finding 'Review' 'UAC sin escritorio seguro' 'El aviso de permisos no se muestra en el escritorio protegido; otro programa podria imitarlo o pulsarlo.' '' 'Subir UAC al nivel predeterminado.'))}
+        else{$findings.Add((New-Finding 'OK' 'Control de cuentas (UAC)' 'Activo: los programas piden permiso antes de cambiar Windows.'))}
+    }
+    $listeners=@(Get-CheckData $Report 'ListeningTCP'|Where-Object { $_.LocalAddress -and [int]$_.OwningProcess -ne 0 -and (Get-ListenerScope $_.LocalAddress) -ne 'Loopback' })
+    $groups=@($listeners|Group-Object {[string]$_.OwningProcess+'|'+$_.LocalPort})
+    $other=New-Object 'Collections.Generic.List[string]';$otherReview=$false
+    foreach($g in $groups){
+        $l=$g.Group[0];$scope=if(@($g.Group|Where-Object {(Get-ListenerScope $_.LocalAddress) -eq 'AllInterfaces'}).Count){'AllInterfaces'}else{'SingleInterface'}
+        $proc=if($l.PSObject.Properties['Process'] -and $l.Process){[string]$l.Process}else{'PID '+$l.OwningProcess}
+        $risk=Get-ListenerRisk $l.LocalPort $scope (Test-WindowsListener $proc $null $l.OwningProcess)
+        if($risk.Name){$findings.Add((New-Finding $risk.Level ("$($risk.Name) abierta a la red (puerto $($l.LocalPort))") "Programa: $proc. Direcciones: $((@($g.Group|ForEach-Object {[string]$_.LocalAddress}|Select-Object -Unique)) -join ' y '). $($risk.Text)" 'InspectNetwork' 'Opcion 8 > 1: ver el programa y, si queres, bloquear el puerto con una regla reversible.'))}
+        elseif($risk.Level -eq 'Review'){$otherReview=$true;$other.Add("$proc ($($l.LocalPort))")}
+        elseif($risk.Level -eq 'Info' -and $risk.Text -notlike 'Servicio de Windows*'){$other.Add("$proc ($($l.LocalPort))")}
+    }
+    if($other.Count){
+        $names=@($other|Select-Object -Unique)
+        $findings.Add((New-Finding $(if($otherReview){'Review'}else{'Info'}) 'Programas con puertos abiertos a la red' ("$($names.Count): "+(($names|Select-Object -First 8) -join ', ')+$(if($names.Count -gt 8){' ...'}else{''})+'. Normal en juegos, chat y apps de sincronizacion; no demuestra exposicion a Internet.') 'InspectNetwork' 'Opcion 8 > 1 para ver cada programa y bloquear el que no reconozcas.'))
+    }
     $privacy=@(Get-CheckData $Report 'Privacy'|Where-Object {$null -eq $_.Value -or $_.Value -ne 0})
-    if($privacy.Count){$findings.Add((New-Finding 'Review' 'Preferencias de publicidad' ("$($privacy.Count) ajustes no estan explicitamente desactivados; ausencia no demuestra publicidad activa.") 'Privacy' 'Usar Reducir publicidad, con respaldo y deshacer.'))}
+    if($privacy.Count){$findings.Add((New-Finding 'Info' 'Preferencias de publicidad' ("$($privacy.Count) ajustes de sugerencias/publicidad siguen activos. No es un riesgo de seguridad.") 'Privacy' 'Usar Reducir publicidad (opcion 2), con respaldo y deshacer.'))}
     $health=@(Get-CheckData $Report 'AntivirusHealth')
-    if($health.Count){$findings.Add((New-Finding $(if($health[0].Code -eq 0){'OK'}else{'Review'}) 'Salud de proveedor antivirus' ([string]$health[0].Health) '' $health[0].Scope))}
+    if($health.Count){$findings.Add((New-Finding $(if($health[0].Code -eq 0){'OK'}else{'Review'}) 'Salud de proveedor antivirus' ([string]$health[0].Health) '' $(if($health[0].Code -eq 0){''}else{$health[0].Scope})))}
     $imported=@($Report.Checks|Where-Object { $_.Id -eq 'ExternalProbe' -and $_.Status -eq 'Checked' }).Count -gt 0
-    foreach($id in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe','PublicProbe')) {
-        $title=@{NetworkInvestigation='Red, procesos y puertos';Router='Router';Support='Soporte Windows y ESU/LTSC';Updates='Parches Windows';CVE='Correlacion CVE Microsoft';IOC='Indicadores de compromiso';ExternalProbe='Prueba externa importada';PublicProbe='Prueba externa mediante servicio'}[$id]
+    $pending=New-Object 'Collections.Generic.List[string]'
+    foreach($id in $script:AdvancedIds) {
+        $title=Get-CheckTitle $id
         $checks=@($Report.Checks|Where-Object Id -eq $id)
         if(-not $checks.Count){
             if($id -eq 'ExternalProbe' -or ($id -eq 'PublicProbe' -and $imported)){continue}
-            $findings.Add((New-Finding 'Unknown' $title 'Comprobacion avanzada pendiente.' 'DeepChecks' 'Ejecutar desde opcion 8; las consultas online requieren confirmacion.'));continue
+            $pending.Add($title);continue
         }
         if($checks[0].Status -ne 'Checked'){continue}
         $data=@($checks[0].Data);if(-not $data.Count){$findings.Add((New-Finding 'Unknown' $title 'La consulta no devolvio evidencia interpretable.' 'DeepChecks' 'Repetir desde opcion 8.'));continue}
         $d=$data[0];$level='Info';$detail='Resultado guardado con su alcance. Revisar detalle para interpretar.'
         switch($id){
             'NetworkInvestigation' {
-                $count=@($d.Listeners|Where-Object Scope -eq 'Network').Count
-                $level=if($count){'Review'}else{'OK'}
-                $detail="$count escuchas TCP fuera de loopback; procesos, rutas, adaptadores y reglas incluidos. No demuestra que sean vulnerabilidades."
+                $net=@($d.Listeners|Where-Object {$_.Scope -ne 'Loopback' -and -not $_.IsWindows})
+                $level='Info'
+                $detail="$($net.Count) programas no-Windows aceptan conexiones desde la red. Ver los puntos de puertos de este resumen."
                 if($d.ActionResult){$detail+=' | Accion: '+$d.ActionResult.Status+' '+$d.ActionResult.Detail}
                 if($d.VPNProfiles -and $d.VPNProfiles.Status -ne 'Checked'){$findings.Add((New-Finding 'Unknown' 'Perfiles VPN Windows' $d.VPNProfiles.Error 'DeepChecks' 'Revisar cliente/permisos. Los adaptadores se inventarian por separado.'))}
+                foreach($row in @($d.Listeners|Where-Object {$_.Scope -ne 'Loopback' -and -not $_.IsWindows -and $_.Risk -and $_.Risk.Name})){
+                    if(-not @($findings|Where-Object Title -like "*(puerto $($row.Port))").Count){$findings.Add((New-Finding $row.Risk.Level ("$($row.Risk.Name) abierta a la red (puerto $($row.Port))") "Programa: $($row.Process). Direcciones: $($row.Address). $($row.Risk.Text)" 'InspectNetwork' 'Opcion 8 > 1: ver el programa y, si queres, bloquear el puerto con una regla reversible.'))}
+                }
             }
-            'Router' {$count=@($d.Mappings|Where-Object Enabled -eq $true).Count;$level=if($count){'Review'}else{'Info'};$detail="$count mapeos UPnP habilitados publicados por el router. "+$d.Scope}
-            'Support' {$level=if($d.Status -eq 'InSupportUntil'){'OK'}elseif($d.Status -eq 'StandardSupportEnded'){'Review'}else{'Unknown'};$detail='Estado: '+$d.Status+' | Fin observado: '+$d.EndDate+' | Fuente: '+$d.Source+' | '+$d.Detail}
+            'Router' {
+                if($d.PSObject.Properties['UPnPAvailable'] -and -not $d.UPnPAvailable){$level='OK';$detail='El router no ofrece UPnP a esta PC: los programas no pueden abrir puertos en el router por su cuenta. '+$d.Scope}
+                else{$count=@($d.Mappings|Where-Object Enabled -eq $true).Count;$level=if($count){'Review'}else{'OK'};$detail="$count puertos abiertos automaticamente en el router (UPnP). "+$(if($count){'Cada uno expone un servicio de tu red a Internet; revisar que los reconozcas. '}else{''})+$d.Scope}
+            }
+            'Support' {$level=if($d.Status -eq 'InSupportUntil'){'OK'}elseif($d.Status -eq 'StandardSupportEnded'){'Review'}elseif($d.Status -eq 'Insider'){'Info'}else{'Unknown'};$detail=$(if($d.Status -eq 'Insider'){$d.Detail}else{'Estado: '+$d.Status+' | Fin observado: '+$d.EndDate+' | Fuente: '+$d.Source+' | '+$d.Detail})}
             'Updates' {
                 $count=@($d.Updates).Count;$security=@($d.Updates|Where-Object Security -eq $true).Count
                 $level=if($security){'Alert'}elseif($count -or $d.RebootRequired){'Review'}else{'OK'}
@@ -107,15 +173,28 @@ function Get-ReportAnalysis($Report) {
             }
         }
         $detail+=' | Observado: '+$checks[0].CheckedAt
-        $findings.Add((New-Finding $level $title $detail 'DeepChecks' 'Ver evidencia y siguientes acciones en opcion 8. Solo se proponen correcciones aplicables.'))
+        $findings.Add((New-Finding $level $title $detail 'DeepChecks' $(if($level -in @('OK','Info')){''}else{'Ver evidencia y siguientes acciones en opcion 8.'})))
     }
-    $verdict=if(@($findings|Where-Object Level -eq Alert).Count){'Hay configuraciones de proteccion que requieren atencion prioritaria.'}elseif(@($findings|Where-Object Level -eq Unknown).Count){'Diagnostico parcial: hay controles que no se pudieron confirmar.'}else{'Sin alertas en los controles interpretados. Revisar las recomendaciones y los limites de cobertura.'}
+    if($pending.Count){$findings.Add((New-Finding 'Pending' 'Comprobaciones avanzadas sin hacer' ($pending -join ', ') 'DeepChecks' 'Opcional: opcion 8. Las consultas por Internet piden confirmacion antes.'))}
+    $alerts=@($findings|Where-Object Level -eq Alert).Count;$reviews=@($findings|Where-Object Level -eq Review).Count;$unknown=@($findings|Where-Object Level -eq Unknown).Count
+    $coreIds=@('Defender','Firewall')
+    $coreMissing=@($Report.Checks|Where-Object {$_.Id -in $coreIds -and $_.Status -ne 'Checked'}).Count -gt 0
+    $state=if($alerts){'EN RIESGO'}elseif($reviews -or $coreMissing){'REVISAR'}else{'SEGURA'}
+    $plain=switch($state){
+        'EN RIESGO' {"Hay $alerts problema(s) que dejan la PC desprotegida. Resolverlos primero."}
+        'REVISAR' {if($coreMissing){'No se pudo confirmar el antivirus o el firewall. Repetir el diagnostico.'}else{"La proteccion basica esta activa, pero hay $reviews punto(s) para revisar."}}
+        default {'Antivirus, firewall y configuracion basica en orden.'+$(if($unknown){" ($unknown dato(s) no se pudieron leer.)"}else{''})}
+    }
+    $verdict=switch($state){'EN RIESGO'{'Hay configuraciones de proteccion que requieren atencion prioritaria.'}'REVISAR'{'Proteccion basica activa con puntos para revisar.'}default{'Sin alertas en los controles interpretados.'}}
     [pscustomobject]@{
+        State=$state
+        Plain=$plain
         Verdict=$verdict
         Generated=[datetime]::UtcNow.ToString('o')
-        Alerts=@($findings|Where-Object Level -eq Alert).Count
-        Review=@($findings|Where-Object Level -eq Review).Count
-        Unknown=@($findings|Where-Object Level -eq Unknown).Count
+        Alerts=$alerts
+        Review=$reviews
+        Unknown=$unknown
+        Pending=$pending.Count
         OK=@($findings|Where-Object Level -eq OK).Count
         Findings=$findings.ToArray()
         Conclusion='Los resultados describen lo observado en las fuentes y fechas indicadas; no garantizan ausencia de compromiso.'
@@ -125,27 +204,52 @@ function Add-ReportAnalysis($Report) {
     $Report|Add-Member -MemberType NoteProperty -Name Analysis -Value (Get-ReportAnalysis $Report) -Force
     return $Report
 }
-function Get-ReportText($Report) {
+function Get-ReportText($Report,[switch]$Full) {
     $a=$Report.Analysis
-    $lines=@('EL CENTINELA DE WINDOWS - RESUMEN',"Version: $($Report.Version) | Diagnostico: $($Report.Created)",$a.Verdict,"Alertas: $($a.Alerts) | Revisar: $($a.Review) | Sin comprobar: $($a.Unknown) | Favorables: $($a.OK)",'')
-    $labels=@{OK='FAVORABLE';Alert='ALERTA';Review='REVISAR';Unknown='SIN COMPROBAR';Info='DATO'}
-    foreach($f in $a.Findings){$lines+="[$($labels[$f.Level])] $($f.Title): $($f.Detail)";if($f.Advice){$lines+='  Propuesta: '+$f.Advice}}
-    $lines+=@('','INVENTARIO Y CONTEXTO')
-    foreach($id in @('Windows','RunCurrentUser','Tasks','Services','Apps')) {
-        $c=@($Report.Checks|Where-Object Id -eq $id)
-        if($c.Count -ne 1 -or $c[0].Status -ne 'Checked'){continue}
-        if($id -eq 'Windows' -and @($c[0].Data).Count){$os=$c[0].Data[0];$lines+="Windows: $($os.Caption), build $($os.BuildNumber). Soporte y CVE no comprobados."}
-        elseif($id -eq 'RunCurrentUser'){
-            $names=@($c[0].Data|ForEach-Object {$_.PSObject.Properties.Name}|Where-Object {$_ -notmatch '^PS'})
-            $lines+='Inicio de esta cuenta: '+$names.Count+' entradas. '+($names -join ', ')
-        }else{$lines+=$id+': '+@($c[0].Data).Count+' elementos inventariados. Detalle disponible; su presencia no demuestra software innecesario o malicioso.'}
+    $created=Convert-ObservedDate $Report.Created
+    $when=if($created.Year -gt 2000){$created.ToLocalTime().ToString('dd/MM/yyyy HH:mm')}else{[string]$Report.Created}
+    $state=if($a.PSObject.Properties['State']){$a.State}else{'REVISAR'}
+    $plainText=if($a.PSObject.Properties['Plain']){$a.Plain}else{$a.Verdict}
+    $lines=@("EL CENTINELA DE WINDOWS $($Report.Version) - $when",'',"VEREDICTO: $state",('  '+$plainText),'')
+    $problems=@($a.Findings|Where-Object {$_.Level -in @('Alert','Review')}|Sort-Object @{e={if($_.Level -eq 'Alert'){0}else{1}}})
+    if($problems.Count){
+        $lines+='PARA RESOLVER / REVISAR'
+        foreach($f in $problems){$mark=if($f.Level -eq 'Alert'){'[!!]'}else{'[!] '};$lines+="  $mark $($f.Title)";$lines+="       $($f.Detail)";if($f.Advice){$lines+="       Que hacer: $($f.Advice)"}}
+        $lines+=''
     }
-    $lines+=@('','COBERTURA, EVIDENCIA Y ADVERTENCIAS')+@($Report.Gaps)+@($a.Conclusion)
-    if($Report.PSObject.Properties['ActionHistory']) {
-        $lines+=@('','ACCIONES Y RESULTADOS')
-        foreach($h in $Report.ActionHistory){$lines+="$($h.Action) [$($h.Status)] $($h.Detail)"}
+    $ok=@($a.Findings|Where-Object Level -eq OK|ForEach-Object Title)
+    $fw=@($ok|Where-Object {$_ -match '^Firewall '}|ForEach-Object {$_ -replace '^Firewall ',''})
+    if($fw.Count -gt 1){$ok=@($ok|Where-Object {$_ -notmatch '^Firewall '})+@('Firewall ('+($fw -join ', ')+')')}
+    if($ok.Count){$lines+='BIEN';$lines+='  '+($ok -join ', ')+'.';$lines+=''}
+    $unk=@($a.Findings|Where-Object Level -eq Unknown)
+    if($unk.Count){$lines+='NO SE PUDO COMPROBAR';foreach($f in $unk){$lines+="  - $($f.Title): $($f.Detail)";if($f.Advice){$lines+="    $($f.Advice)"}};$lines+=''}
+    $info=@($a.Findings|Where-Object {$_.Level -in @('Info','Pending')})
+    if($info.Count){$lines+='PARA TU INFORMACION';foreach($f in $info){$lines+="  - $($f.Title): $($f.Detail)"};$lines+=''}
+    if($Report.PSObject.Properties['ActionHistory'] -and @($Report.ActionHistory).Count) {
+        $lines+='ACCIONES Y RESULTADOS'
+        foreach($h in $Report.ActionHistory){$lines+="  $($h.Action) [$($h.Status)] $($h.Detail)"}
+        $lines+=''
+    }
+    if($Full){
+        $lines+='INVENTARIO Y CONTEXTO'
+        foreach($id in @('Windows','RunCurrentUser','Tasks','Services','Apps')) {
+            $c=@($Report.Checks|Where-Object Id -eq $id)
+            if($c.Count -ne 1 -or $c[0].Status -ne 'Checked'){continue}
+            if($id -eq 'Windows' -and @($c[0].Data).Count){$os=$c[0].Data[0];$lines+="Windows: $($os.Caption), build $($os.BuildNumber)."}
+            elseif($id -eq 'RunCurrentUser'){
+                $names=@($c[0].Data|ForEach-Object {$_.PSObject.Properties.Name}|Where-Object {$_ -notmatch '^PS'})
+                $lines+='Inicio de esta cuenta: '+$names.Count+' entradas. '+($names -join ', ')
+            }else{$lines+=(Get-CheckTitle $id)+': '+@($c[0].Data).Count+' elementos inventariados.'}
+        }
+        $lines+=@('','LIMITES')+@($Report.Gaps)+@($a.Conclusion)
+    } else {
+        $lines+='Limites: '+$a.Conclusion
     }
     return (($lines -join [Environment]::NewLine) -replace '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]','?')
+}
+function Protect-ExportText([string]$Text) {
+    # Oculta credenciales que algunos programas dejan en argumentos de tareas/servicios antes de exportar.
+    return [regex]::Replace($Text,'(?i)((?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key)\s*[=:]\s*)("?)[^\s"\\,;]+','$1$2[oculto]')
 }
 function Show-Report($Report) {
     Write-Host "`n==============================================================" -ForegroundColor Cyan
@@ -153,7 +257,7 @@ function Show-Report($Report) {
     Write-Host '==============================================================' -ForegroundColor Cyan
 }
 function Show-Details($Report) {
-    foreach($c in $Report.Checks){Write-Host "`n[$($c.Status)] $($c.Id)";if($c.Error){Write-Warning $c.Error}else{($c.Data|Format-List|Out-String) -replace '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]','?'|Out-Host}}
+    foreach($c in $Report.Checks){Write-Host "`n[$($c.Status)] $(Get-CheckTitle $c.Id) ($($c.Id))";if($c.Error){Write-Warning $c.Error}else{($c.Data|Format-List|Out-String) -replace '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]','?'|Out-Host}}
 }
 function Get-DesktopFolder { [Environment]::GetFolderPath('DesktopDirectory') }
 function Export-DesktopReport($Report) {
@@ -163,7 +267,7 @@ function Export-DesktopReport($Report) {
     $folder=Join-Path $desktop ('Centinela-'+[datetime]::Now.ToString('yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
     [IO.Directory]::CreateDirectory($folder)|Out-Null
     foreach($name in @('Resumen.txt','Diagnostico.json')) {
-        $content=if($name -eq 'Resumen.txt'){Get-ReportText $Report}else{$Report|ConvertTo-Json -Depth 15}
+        $content=Protect-ExportText $(if($name -eq 'Resumen.txt'){Get-ReportText $Report -Full}else{$Report|ConvertTo-Json -Depth 15})
         $stream=[IO.File]::Open((Join-Path $folder $name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
         try{$bytes=[Text.Encoding]::UTF8.GetBytes($content);$stream.Write($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
     }
@@ -207,9 +311,9 @@ function Invoke-SecuritySolution([string]$Action) {
     return $result
 }
 function Show-Solutions($Report) {
-    $items=@($Report.Analysis.Findings|Where-Object {$_.Level -in @('Alert','Review','Unknown')})
+    $items=@($Report.Analysis.Findings|Where-Object {$_.Level -in @('Alert','Review','Unknown','Pending')}|Sort-Object @{e={@{Alert=0;Review=1;Unknown=2;Pending=3}[[string]$_.Level]}})
     if(-not $items.Count){Write-Host 'No hay correcciones propuestas por los controles disponibles.';return}
-    for($i=0;$i -lt $items.Count;$i++){Write-Host "[$($i+1)] $($items[$i].Title)";Write-Host ('    '+$items[$i].Advice)}
+    for($i=0;$i -lt $items.Count;$i++){Write-Host "[$($i+1)] $($items[$i].Title)";if($items[$i].Advice){Write-Host ('    '+$items[$i].Advice)}}
     $answer=Read-Host 'Numero de propuesta (Enter vuelve)';$index=0
     if(-not [int]::TryParse($answer,[ref]$index) -or $index -lt 1 -or $index -gt $items.Count){return}
     $item=$items[$index-1]
