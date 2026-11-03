@@ -91,7 +91,7 @@ function Get-ReportAnalysis($Report) {
         Unknown=@($findings|Where-Object Level -eq Unknown).Count
         OK=@($findings|Where-Object Level -eq OK).Count
         Findings=$findings.ToArray()
-        Conclusion='Sin garantia de ausencia de compromiso. Los hallazgos son configuraciones y senales observadas; no un escaneo completo de vulnerabilidades/CVE.'
+        Conclusion='Los resultados describen lo observado en las fuentes y fechas indicadas; no garantizan ausencia de compromiso.'
     }
 }
 function Add-ReportAnalysis($Report) {
@@ -113,7 +113,7 @@ function Get-ReportText($Report) {
             $lines+='Inicio de esta cuenta: '+$names.Count+' entradas. '+($names -join ', ')
         }else{$lines+=$id+': '+@($c[0].Data).Count+' elementos inventariados. Detalle disponible; su presencia no demuestra software innecesario o malicioso.'}
     }
-    $lines+=@('','LIMITES Y ADVERTENCIAS')+@($Report.Gaps)+@($a.Conclusion)
+    $lines+=@('','COBERTURA, EVIDENCIA Y ADVERTENCIAS')+@($Report.Gaps)+@($a.Conclusion)
     if($Report.PSObject.Properties['ActionHistory']) {
         $lines+=@('','ACCIONES Y RESULTADOS')
         foreach($h in $Report.ActionHistory){$lines+="$($h.Action) [$($h.Status)] $($h.Detail)"}

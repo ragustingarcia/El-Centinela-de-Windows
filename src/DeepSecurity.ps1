@@ -166,7 +166,7 @@ function Show-DeepMenu($Report) {
     Write-Host '[7] Instalar parches de seguridad previamente consultados'
     Write-Host '[8] Importar prueba ejecutada desde otra red'
     Write-Host '[9] Correlacion CVE/KB con Microsoft MSRC (online)'
-    Write-Host '[10] Prueba externa voluntaria sin servidor propio (Check-Host)'
+    Write-Host '[10] Prueba externa voluntaria sin servidor propio (Globalping)'
     $choice=Read-Host 'Comprobacion (Enter vuelve)'
     switch($choice){
         '1' {Add-DeepResult $Report 'NetworkInvestigation' {Show-NetworkInvestigation}}
@@ -175,7 +175,7 @@ function Show-DeepMenu($Report) {
         '4' {if(Confirm-Choice 'Consultar tabla oficial de soporte por Internet?'){Add-DeepResult $Report 'Support' {Get-SupportAssessment}}}
         '9' {if(Confirm-Choice 'Consultar CVRF Microsoft de los ultimos 3 meses?'){Add-DeepResult $Report 'CVE' {Get-CveCorrelation $Report}}}
         '10' {
-            Write-Host 'IPify recibira la consulta de IP publica; Check-Host recibira esa IP y el puerto, y puede conservar/publicar el reporte. No envia inventarios ni informes de la PC.'
+            Write-Host 'IPify recibira la consulta de IP publica; Globalping recibira esa IP y el puerto, y puede conservar/publicar el reporte. No envia inventarios ni informes de la PC.'
             $portText=Read-Host 'Un puerto TCP propio a comprobar';$port=0
             $family=Read-Host 'Familia de salida a comprobar: 4 (IPv4) o 6 (IPv6)'
             if([int]::TryParse($portText,[ref]$port) -and $port -ge 1 -and $port -le 65535 -and $family -in @('4','6') -and (Confirm-Choice 'Consultar servicios externos para esta prueba?')){
@@ -223,29 +223,30 @@ function Get-PublicProbe([int]$Port,[ValidateSet('4','6')][string]$Family='4') {
     if($b.Length -eq 4 -and ($b[0] -in @(0,10,127) -or $b[0] -ge 224 -or ($b[0] -eq 169 -and $b[1] -eq 254) -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127))){throw 'IP privada/compartida no valida para la prueba publica.'}
     if($b.Length -eq 16 -and (($b[0] -band 254) -eq 252 -or $ip.IsIPv4MappedToIPv6)){throw 'Direccion IPv6 no global o mapeada; elegir la familia correcta.'}
     Write-Host "La IP de salida observada es $ip; se comprobara TCP $Port desde un nodo externo."
-    if(-not (Confirm-Choice 'Confirmas que controlas/autorizas esa IP y que no es una salida VPN/corporativa/compartida ajena?')){throw 'Prueba externa cancelada antes de enviar el objetivo a Check-Host.'}
-    $hostTarget=if($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6){'['+$ip.ToString()+']:'+$Port}else{$ip.ToString()+':'+$Port}
-    $uri='https://check-host.net/check-tcp?host='+[uri]::EscapeDataString($hostTarget)+'&max_nodes=1'
-    $request=Invoke-RestMethod -Uri $uri -Headers @{Accept='application/json'} -TimeoutSec 15 -ErrorAction Stop
-    if($request.ok -ne 1 -or [string]$request.request_id -notmatch '^[a-fA-F0-9]{1,64}$'){throw 'El servicio externo no acepto una solicitud verificable.'}
+    if(-not (Confirm-Choice 'Confirmas que controlas/autorizas esa IP y que no es una salida VPN/corporativa/compartida ajena?')){throw 'Prueba externa cancelada antes de enviar el objetivo a Globalping.'}
+    $body=@{type='ping';target=$ip.ToString();limit=1;measurementOptions=@{protocol='TCP';port=$Port;packets=1}}|ConvertTo-Json -Depth 5 -Compress
+    $request=Invoke-RestMethod -Uri 'https://api.globalping.io/v1/measurements' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 20 -ErrorAction Stop
+    if([string]$request.id -notmatch '^[A-Za-z0-9]{1,64}$' -or $request.probesCount -ne 1){throw 'El proveedor no devolvio una solicitud verificable.'}
     $status='Pending';$nodes=@()
     for($attempt=0;$attempt -lt 5;$attempt++){
-        $response=Invoke-RestMethod -Uri ('https://check-host.net/check-result/'+$request.request_id) -Headers @{Accept='application/json'} -TimeoutSec 12 -ErrorAction Stop
-        foreach($node in $response.PSObject.Properties){
-            if($null -eq $node.Value){continue}
-            foreach($value in @($node.Value)){
-                if($null -eq $value){continue}
-                if($value.PSObject.Properties['time'] -and ($value.time -is [double] -or $value.time -is [int] -or $value.time -is [long] -or $value.time -is [decimal]) -and $value.time -ge 0 -and -not [double]::IsNaN([double]$value.time) -and -not [double]::IsInfinity([double]$value.time)){
-                    $answer=$null
-                    if([Net.IPAddress]::TryParse([string]$value.address,[ref]$answer) -and $answer.Equals($ip)){$status='Reachable'}else{$status='Unknown'}
-                }elseif($value.PSObject.Properties['error']){$status='NoConnection'}else{$status='Unknown'}
-                $nodes+=[pscustomobject]@{Node=$node.Name;Result=$value}
+        $response=Invoke-RestMethod -Uri ('https://api.globalping.io/v1/measurements/'+$request.id) -TimeoutSec 12 -ErrorAction Stop
+        if($response.status -eq 'finished'){
+            $status='Unknown';$nodes=@($response.results)
+            if($response.id -eq $request.id -and $response.type -eq 'ping' -and $response.target -eq $ip.ToString() -and $response.measurementOptions.protocol -eq 'TCP' -and $response.measurementOptions.port -eq $Port -and $nodes.Count -eq 1){
+                $detail=$nodes[0].result;$answer=$null
+                if($detail.status -eq 'finished' -and [Net.IPAddress]::TryParse([string]$detail.resolvedAddress,[ref]$answer) -and $answer.Equals($ip)){
+                    $validRtt=@($detail.timings|Where-Object { ($_.rtt -is [int] -or $_.rtt -is [long] -or $_.rtt -is [double] -or $_.rtt -is [decimal]) -and $_.rtt -ge 0 -and -not [double]::IsNaN([double]$_.rtt) -and -not [double]::IsInfinity([double]$_.rtt) })
+                    if(($detail.stats.rcv -is [int] -or $detail.stats.rcv -is [long]) -and $detail.stats.rcv -gt 0 -and $validRtt.Count){$status='Reachable'}
+                    elseif(($detail.stats.total -is [int] -or $detail.stats.total -is [long]) -and $detail.stats.total -gt 0 -and $detail.stats.rcv -eq 0){$status='NoConnection'}
+                }
             }
+            break
         }
-        if($status -ne 'Pending'){break};Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 1
     }
-    [pscustomobject]@{Provider='Check-Host.net';Target=$ip.ToString();Family=$Family;Port=$Port;Status=$status;At=[datetime]::UtcNow.ToString('o');RequestId=$request.request_id;EvidenceLink=('https://check-host.net/check-report/'+$request.request_id);Nodes=$nodes;Scope='Un nodo externo, una IP/familia/puerto y fecha. Puede ser router/VPN/NAT u otro dispositivo; correlacionar con red local. NoConnection/Unknown/Pending no acreditan seguridad.'}
+    [pscustomobject]@{Provider='Globalping';Target=$ip.ToString();Family=$Family;Port=$Port;Status=$status;At=[datetime]::UtcNow.ToString('o');RequestId=$request.id;EvidenceLink=('https://api.globalping.io/v1/measurements/'+$request.id);Nodes=$nodes;Scope='Un nodo externo, una IP/familia/puerto y fecha. Puede ser router/VPN/NAT u otro dispositivo; correlacionar con red local. NoConnection/Unknown/Pending no acreditan seguridad.'}
 }
+
 function Get-KnownPython {
     $base=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Python'
     if(Test-Path -LiteralPath $base){foreach($d in Get-ChildItem -LiteralPath $base -Directory|Sort-Object Name -Descending){

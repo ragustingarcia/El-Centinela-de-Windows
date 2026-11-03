@@ -75,14 +75,15 @@ $cves=Get-CveCorrelation $cveReport
 Assert ($cves.Gaps.Count -eq 3 -and $cves.Sources.Count -eq 0) 'Failed CVRF sources preserved as coverage gaps'
 $script:publicResult='success';$script:checkHostCalls=0;$script:consent=$true
 function Confirm-Choice {param($Question) return $script:consent}
-function Invoke-RestMethod {param($Uri,$Headers,$TimeoutSec,$ErrorAction)
+function Invoke-RestMethod {param($Uri,$Headers,$TimeoutSec,$ErrorAction,$Method,$ContentType,$Body)
     if($Uri -like '*ipify*'){return [pscustomobject]@{ip='8.8.8.8'}}
-    if($Uri -like '*/check-tcp*'){$script:checkHostCalls++;return [pscustomobject]@{ok=1;request_id='abc123';nodes=[pscustomobject]@{fixture=@('test')}}}
-    if($script:publicResult -eq 'success'){return [pscustomobject]@{fixture=@([pscustomobject]@{time=0;address='8.8.8.8'})}}
-    if($script:publicResult -eq 'wrong'){return [pscustomobject]@{fixture=@([pscustomobject]@{time=0.1;address='1.1.1.1'})}}
-    return [pscustomobject]@{fixture=@([pscustomobject]@{error='fixture timeout'})}
+    if($Method -eq 'Post'){$script:checkHostCalls++;$script:publicBody=$Body|ConvertFrom-Json;return [pscustomobject]@{id='abc123';probesCount=1}}
+    $address=if($script:publicResult -eq 'wrong'){'1.1.1.1'}else{'8.8.8.8'}
+    $received=if($script:publicResult -eq 'error'){0}else{1}
+    [pscustomobject]@{id='abc123';type='ping';status='finished';target='8.8.8.8';measurementOptions=[pscustomobject]@{protocol='TCP';port=5000};results=@([pscustomobject]@{probe=@{country='fixture'};result=[pscustomobject]@{status='finished';resolvedAddress=$address;stats=[pscustomobject]@{total=1;rcv=$received};timings=@([pscustomobject]@{rtt=0})}})}
 }
 Assert ((Get-PublicProbe 5000 '4').Status -eq 'Reachable') 'External provider positive evidence accepted including zero-time response'
+Assert ($script:publicBody.target -eq '8.8.8.8' -and $script:publicBody.limit -eq 1 -and $script:publicBody.measurementOptions.protocol -eq 'TCP') 'External request limited to consented literal target and TCP probe'
 $script:publicResult='wrong'
 Assert ((Get-PublicProbe 5000 '4').Status -eq 'Unknown') 'External response for wrong address never proves exposure'
 $script:publicResult='error'
