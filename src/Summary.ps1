@@ -68,6 +68,7 @@ function Get-ReportAnalysis($Report) {
         elseif($checks[0].Status -eq 'Checked') {
             $data=@($checks[0].Data)
             $detail=if($id -eq 'Updates' -and $data.Count){[string]@($data[0].Updates).Count+' parches pendientes; revisar categoria de seguridad e instalar desde opcion 8.'}elseif($id -eq 'CVE' -and $data.Count){[string]@($data[0].Matches).Count+' correlaciones KB/CVE. '+$data[0].Scope}elseif($id -eq 'Support' -and $data.Count){'Resultado: '+$data[0].Status+' | Fuente: '+$data[0].Source}elseif($id -eq 'IOC' -and $data.Count){'Exit code: '+$data[0].ExitCode+' | '+($data[0].Verdict|ConvertTo-Json -Compress -Depth 4)}else{'Resultado guardado; alcance y evidencia en detalle/exportacion.'}
+            $detail+=' | Observado: '+$checks[0].CheckedAt
             $findings.Add((New-Finding 'Review' $title $detail 'DeepChecks' 'Ver resultado y siguientes acciones en opcion 8. Checked significa que la consulta corrio, no que todo este resuelto.'))
             if($data.Count -and $id -eq 'CVE' -and @($data[0].Gaps).Count){$findings.Add((New-Finding 'Unknown' 'Fuentes CVE incompletas' (@($data[0].Gaps) -join '; ') 'DeepChecks' 'Reintentar fuentes; cero coincidencias no acredita ausencia de vulnerabilidades.'))}
             if($data.Count -and $id -eq 'Support' -and $data[0].Status -eq 'Unknown'){$findings.Add((New-Finding 'Unknown' 'Soporte sin confirmar' $data[0].Detail 'DeepChecks' 'Revisar la tabla oficial correspondiente al canal/edicion.'))}

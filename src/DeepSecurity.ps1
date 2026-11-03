@@ -81,6 +81,8 @@ function Get-SupportAssessment {
 function Get-CveCorrelation($Report) {
     $updates=@(Get-CheckData $Report 'Updates');if(-not $updates.Count){throw 'Consultar primero Windows Update.'}
     $kbs=@($updates[0].Updates|ForEach-Object {$_.KB}|ForEach-Object {[string]$_})
+    $kbSet=New-Object 'Collections.Generic.HashSet[string]'
+    foreach($kb in $kbs){$kbSet.Add($kb)|Out-Null}
     $matches=New-Object 'Collections.Generic.List[object]';$sources=@();$gaps=@()
     for($i=0;$i -lt 3;$i++){
         $month=[datetime]::UtcNow.AddMonths(-$i).ToString('yyyy-MMM',[Globalization.CultureInfo]::InvariantCulture)
@@ -89,8 +91,9 @@ function Get-CveCorrelation($Report) {
             $response=Invoke-WebRequest -Uri $url -Headers @{Accept='application/json'} -UseBasicParsing -TimeoutSec 45 -ErrorAction Stop
             if($response.RawContentLength -gt 64MB){throw 'Documento excede limite de 64 MiB.'}
             $doc=$response.Content|ConvertFrom-Json;$sources+=$url
-            foreach($v in $doc.Vulnerability){foreach($fix in $v.Remediations){foreach($kb in $kbs){
-                if([string]$fix.Description.Value -match ('(?<!\d)'+[regex]::Escape($kb)+'(?!\d)')){
+            foreach($v in $doc.Vulnerability){foreach($fix in $v.Remediations){foreach($article in [regex]::Matches([string]$fix.Description.Value,'(?<!\d)\d{6,8}(?!\d)')){
+                $kb=$article.Value
+                if($kbSet.Contains($kb)){
                     $matches.Add([pscustomobject]@{CVE=$v.CVE;Title=$v.Title.Value;KB=$kb;Source=$url})
                 }
             }}}

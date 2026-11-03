@@ -72,6 +72,10 @@ try {
  function Get-MpComputerStatus {throw 'fixture denied'}
  $report=Get-SecurityReport
  Assert (@($report.Checks|Where-Object { $_.Id -eq 'Defender' -and $_.Status -eq 'Unavailable' }).Count -eq 1) 'Report propagates failed security check'
+ $previous=[pscustomobject]@{Checks=@([pscustomobject]@{Id='Router';Status='Checked';CheckedAt='2026-11-02T00:00:00Z';Data=@('fixture')});ActionHistory=@([pscustomobject]@{Status='Verified'})}
+ $refreshed=Get-SecurityReport $previous
+ Assert (@($refreshed.Checks|Where-Object Id -eq Router).Count -eq 1) 'Refreshing baseline retains dated advanced evidence'
+ Assert ($refreshed.ActionHistory[0].Status -eq 'Verified') 'Refreshing baseline retains remediation history'
 } finally {
  if(Test-Path -LiteralPath $fixture){
   if(-not $fixture.StartsWith($PSScriptRoot+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe cleanup'}

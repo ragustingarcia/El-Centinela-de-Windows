@@ -4,7 +4,9 @@ Esta candidata amplia las funciones de rc.2 con investigacion de red, reglas rev
 
 La verificacion automatizada usa registro/Defender/WUA/firewall/red simulados y fixtures de archivos, ACL y enlaces reales. Incluye rechazo de procesos/puertos protegidos, cambio de ejecutable, journal previo, seleccion de parches modificada, descarga parcial, reinicio pendiente e informes IOC/externos desconocidos. El contrato --describe del motor generado se consulta sin realizar un escaneo privado.
 
-Pendiente antes de considerar estable: UAC de extremo a extremo, creacion real y efecto de reglas, instalacion real de parches, aislamiento de red observado con captura, analisis IOC completo en una VM descartable, router real y prueba desde otra conexion. No se cambiaron firewall, antivirus ni actualizaciones de la PC de trabajo durante el desarrollo. Sin estas pruebas no se afirma que la candidata haya resuelto vulnerabilidades del equipo del usuario.
+CI valida lectura nativa del helper, SID distinto rechazado y creacion/deshacer de una regla sobre un listener loopback en un runner descartable. Esto verifica el objeto/regla, no alcanzabilidad desde Internet.
+
+Pendiente antes de considerar estable: consentimiento UAC de extremo a extremo, efecto de reglas desde otra red, instalacion real de parches, aislamiento de red observado con captura, analisis IOC completo en una VM descartable, router real y prueba desde otra conexion. No se cambiaron firewall, antivirus ni actualizaciones de la PC de trabajo durante el desarrollo. Sin estas pruebas no se afirma que la candidata haya resuelto vulnerabilidades del equipo del usuario.
 
 El motor se genera desde interplains/Zero-Breach-Toolkit commit ebc50fb160cebc6063c1164e670e3503d01a9613, sin cambios de codigo. Ver third_party/zero-breach/PROVENANCE.json, LICENSE, NOTICE e IOCS-LICENSE.md. El wrapper verifica SHA-256 antes de ejecutarlo. Necesita Python existente y no lo descarga automaticamente.
 

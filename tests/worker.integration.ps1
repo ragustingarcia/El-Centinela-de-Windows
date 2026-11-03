@@ -2,6 +2,11 @@ $ErrorActionPreference='Stop'
 if($env:GITHUB_ACTIONS -ne 'true'){throw 'Solo ejecutar en runner descartable de GitHub Actions.'}
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'src/Centinela.ps1') -LibraryOnly
 if(-not (Test-IsAdmin)){throw 'El runner necesita administrador para la prueba de firewall.'}
+$bad=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((@{Action='NetworkRead';Arguments=@{};Sid='S-1-0-0';Id=[guid]::NewGuid().ToString('N')}|ConvertTo-Json -Compress)))
+$denied=$false
+try{& (Join-Path (Split-Path $PSScriptRoot -Parent) 'src/SecurityWorker.ps1') -Payload $bad}catch{$denied=$true}
+if(-not $denied){throw 'El helper no rechazo otra identidad.'}
+Write-Output 'PASS native wrong-SID request rejected before action'
 $read=Invoke-ElevatedSecurity 'NetworkRead' @{}
 if($read.Status -ne 'Checked' -or -not $read.Data){throw 'El helper nativo no devolvio inventario de red.'}
 Write-Output 'PASS native worker serialization, same-SID validation and network inventory'

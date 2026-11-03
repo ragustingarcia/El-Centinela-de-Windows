@@ -159,10 +159,10 @@ function Invoke-TempPlan($Plan) {
 }
 function Invoke-Check($Id,[scriptblock]$Read) {
     $watch=[Diagnostics.Stopwatch]::StartNew()
-    try { $data=@(& $Read); return [pscustomobject]@{ Id=$Id; Status='Checked'; Data=$data; Error=$null; Seconds=$watch.Elapsed.TotalSeconds } }
-    catch { return [pscustomobject]@{ Id=$Id; Status='Unavailable'; Data=@(); Error=$_.Exception.Message; Seconds=$watch.Elapsed.TotalSeconds } }
+    try { $data=@(& $Read); return [pscustomobject]@{ Id=$Id; Status='Checked'; CheckedAt=[datetime]::UtcNow.ToString('o'); Data=$data; Error=$null; Seconds=$watch.Elapsed.TotalSeconds } }
+    catch { return [pscustomobject]@{ Id=$Id; Status='Unavailable'; CheckedAt=[datetime]::UtcNow.ToString('o'); Data=@(); Error=$_.Exception.Message; Seconds=$watch.Elapsed.TotalSeconds } }
 }
-function Get-SecurityReport {
+function Get-SecurityReport($PreviousReport) {
     $checks=@(
         Invoke-Check 'Windows' { Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 15 | Select-Object Caption,Version,BuildNumber,LastBootUpTime }
         Invoke-Check 'Defender' { Get-MpComputerStatus | Select-Object AntivirusEnabled,RealTimeProtectionEnabled,AMRunningMode,IsTamperProtected,AntivirusSignatureLastUpdated,QuickScanEndTime }
@@ -176,7 +176,10 @@ function Get-SecurityReport {
         Invoke-Check 'Apps' { Get-AppxPackage | Select-Object Name,Publisher,PackageFamilyName }
         Invoke-Check 'Privacy' { foreach($n in $script:PrivacyNames){ [pscustomobject]@{Name=$n;Value=(Read-PrivacyValue $n)} } }
     )
-    return Add-ReportAnalysis ([pscustomobject]@{ Schema=1; Version=$script:Version; Created=[DateTime]::UtcNow.ToString('o'); Sid=(Get-Identity); Checks=$checks; Gaps=@('La cobertura avanzada aparece como pendiente hasta ejecutar sus comprobaciones en la opcion 8.','Las pruebas externas importadas cubren solo la IP, puertos y fecha indicados.','El analisis IOC busca indicadores conocidos; no garantiza ausencia de compromiso.','La correlacion CVE se limita a KB pendientes y boletines Microsoft consultados, no todas las aplicaciones.') })
+    if($PreviousReport){$checks+=@($PreviousReport.Checks|Where-Object {$_.Id -in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe')})}
+    $report=[pscustomobject]@{ Schema=1; Version=$script:Version; Created=[DateTime]::UtcNow.ToString('o'); Sid=(Get-Identity); Checks=$checks; Gaps=@('La cobertura avanzada aparece como pendiente hasta ejecutar sus comprobaciones en la opcion 8.','Las pruebas externas importadas cubren solo la IP, puertos y fecha indicados.','El analisis IOC busca indicadores conocidos; no garantiza ausencia de compromiso.','La correlacion CVE se limita a KB pendientes y boletines Microsoft consultados, no todas las aplicaciones.') }
+    if($PreviousReport -and $PreviousReport.PSObject.Properties['ActionHistory']){$report|Add-Member -MemberType NoteProperty -Name ActionHistory -Value @($PreviousReport.ActionHistory)}
+    return Add-ReportAnalysis $report
 }
 function Export-Report($Report,[string]$Path) {
     Test-LocalPath $Path | Out-Null
@@ -200,7 +203,7 @@ while ($true) {
     try {
         switch ($choice) {
             '1' {
-                $script:LastReport=Get-SecurityReport; Show-Report $script:LastReport
+                $script:LastReport=Get-SecurityReport $script:LastReport; Show-Report $script:LastReport
                 $follow=Read-Host '[E] Exportar al Escritorio / [S] Soluciones / [D] Detalle / Enter menu'
                 switch(([string]$follow).ToUpperInvariant()) {
                     'E' { Write-Host (Export-DesktopReport $script:LastReport) }

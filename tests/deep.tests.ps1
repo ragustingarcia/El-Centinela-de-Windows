@@ -64,6 +64,13 @@ Reject {Install-SelectedSecurityUpdates @($id)} 'Partial download prevents insta
 $script:downloadStatus=2
 Reject {Install-SelectedSecurityUpdates @('abcdef00-0000-0000-0000-000000000002')} 'Changed approved update list prevents installation'
 Assert ($script:installs -eq 1) 'Rejected WUA cases never call installer'
+$cveReport=[pscustomobject]@{Checks=@([pscustomobject]@{Id='Updates';Status='Checked';Data=@([pscustomobject]@{Updates=@([pscustomobject]@{KB=@('5126653')})})})}
+function Invoke-WebRequest {param($Uri,$Headers,[switch]$UseBasicParsing,$TimeoutSec,$ErrorAction) [pscustomobject]@{RawContentLength=200;Content='{"Vulnerability":[{"CVE":"CVE-2026-TEST","Title":{"Value":"fixture"},"Remediations":[{"Description":{"Value":"5126653"}}]}]}'}}
+$cves=Get-CveCorrelation $cveReport
+Assert ($cves.Matches.Count -eq 1 -and $cves.Matches[0].KB -eq '5126653' -and $cves.Sources.Count -eq 3) 'CVE matches use only applicable KB evidence with provenance'
+function Invoke-WebRequest {param($Uri,$Headers,[switch]$UseBasicParsing,$TimeoutSec,$ErrorAction) throw 'fixture source unavailable'}
+$cves=Get-CveCorrelation $cveReport
+Assert ($cves.Gaps.Count -eq 3 -and $cves.Sources.Count -eq 0) 'Failed CVRF sources preserved as coverage gaps'
 $fixture=Join-Path $PSScriptRoot ('deep-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $fixture|Out-Null
 try{
     $external=Join-Path $fixture 'external.json'
