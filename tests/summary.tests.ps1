@@ -7,12 +7,12 @@ function New-Fixture {
     [pscustomobject]@{Version='test';Created=[datetime]::UtcNow.ToString('o');Gaps=@('coverage gap');Checks=@(
         [pscustomobject]@{Id='Defender';Status='Checked';Data=@([pscustomobject]@{AMRunningMode='Normal';AntivirusEnabled=$true;RealTimeProtectionEnabled=$true;IsTamperProtected=$true;AntivirusSignatureLastUpdated=[datetime]::Now;QuickScanEndTime=[datetime]::Now})}
         [pscustomobject]@{Id='Firewall';Status='Checked';Data=@([pscustomobject]@{Name='Public';Enabled=$true;DefaultInboundAction='Block'})}
-        [pscustomobject]@{Id='ListeningTCP';Status='Checked';Data=@([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=80})}
+        [pscustomobject]@{Id='ListeningTCP';Status='Checked';Data=@([pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=80;OwningProcess=1234;Process='app'})}
     )}
 }
 $r=Add-ReportAnalysis (New-Fixture)
 Assert ($r.Analysis.Alerts -eq 0 -and $r.Analysis.OK -eq 4) 'Healthy evidence produces favorable summary'
-Assert (@($r.Analysis.Findings|Where-Object Title -like 'Servicios escuchando*').Count -eq 0) 'Loopback is not external exposure'
+Assert (@($r.Analysis.Findings|Where-Object Title -like 'Programas con puertos*').Count -eq 0) 'Loopback is not external exposure'
 $r.Checks[0].Data[0].RealTimeProtectionEnabled=$false;$r=Add-ReportAnalysis $r
 Assert (@($r.Analysis.Findings|Where-Object Action -eq EnableRealtime).Count -eq 1) 'Disabled protection proposes typed solution'
 $r.Checks[0].Data[0].AMRunningMode='Passive';$r=Add-ReportAnalysis $r
@@ -24,11 +24,11 @@ Assert (@($r.Analysis.Findings|Where-Object Action -eq QuickScan).Count -eq 1) '
 $r.Checks[1].Data[0].Enabled=$false;$r=Add-ReportAnalysis $r
 Assert (@($r.Analysis.Findings|Where-Object { $_.Level -eq 'Alert' -and $_.Title -like 'Firewall*' }).Count -eq 1) 'Disabled firewall creates alert'
 $r.Checks[2].Data[0].LocalAddress='0.0.0.0';$r=Add-ReportAnalysis $r
-Assert (@($r.Analysis.Findings|Where-Object Title -like 'Servicios escuchando*').Count -eq 1) 'Network listener produces contextual review'
+Assert (@($r.Analysis.Findings|Where-Object {$_.Title -like 'Programas con puertos*' -and $_.Level -eq 'Review'}).Count -eq 1) 'Network listener produces contextual review'
 $r.Checks[0].Status='Unavailable';$r.Checks[0]|Add-Member Error 'denied';$r=Add-ReportAnalysis $r
-Assert ($r.Analysis.Unknown -eq 8) 'Unavailable check remains unknown'
+Assert ($r.Analysis.Unknown -eq 1 -and $r.Analysis.Pending -eq 7 -and @($r.Analysis.Findings|Where-Object Level -eq Pending).Count -eq 1 -and $r.Analysis.State -eq 'EN RIESGO') 'Unavailable check remains unknown; pending advanced checks grouped; firewall off means EN RIESGO'
 $r|Add-Member ActionHistory @([pscustomobject]@{Action='QuickScan';Status='Requested';Detail='Pending completion'})
-$text=Get-ReportText $r
+$text=Get-ReportText $r -Full
 Assert ($text.Contains('coverage gap') -and $text.Contains('denied') -and $text.Contains('Pending completion')) 'Summary includes gaps failures and action results'
 $fixture=Join-Path $PSScriptRoot ('summary-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $fixture|Out-Null
@@ -38,12 +38,12 @@ try {
     $folder=Export-DesktopReport $r
     Assert (Test-Path -LiteralPath (Join-Path $folder 'Resumen.txt')) 'Desktop export includes readable text'
     $saved=Get-Content -LiteralPath (Join-Path $folder 'Diagnostico.json') -Raw|ConvertFrom-Json
-    Assert ((Convert-ObservedDate $saved.Created) -eq (Convert-ObservedDate $r.Created) -and $saved.Analysis.Unknown -eq 8) 'Export uses cached analyzed snapshot'
+    Assert ((Convert-ObservedDate $saved.Created) -eq (Convert-ObservedDate $r.Created) -and $saved.Analysis.Unknown -eq 1) 'Export uses cached analyzed snapshot'
     Assert ($saved.ActionHistory[0].Status -eq 'Requested') 'Export retains action verification status'
     $second=Export-DesktopReport $r
     Assert ($second -ne $folder) 'Exports never overwrite previous snapshot'
 } finally {
-    if(-not $fixture.StartsWith($PSScriptRoot+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe test cleanup'}
+    if(-not $fixture.StartsWith(($PSScriptRoot+[IO.Path]::DirectorySeparatorChar),[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe test cleanup'}
     Remove-Item -LiteralPath $fixture -Recurse -Force
 }
 $script:state=[pscustomobject]@{AMRunningMode='Normal';RealTimeProtectionEnabled=$false;AntivirusSignatureLastUpdated=[datetime]::Now.AddDays(-10);QuickScanEndTime=[datetime]::Now.AddDays(-10)}
@@ -96,7 +96,7 @@ $assessed=New-Fixture
 $assessed.Checks+=@([pscustomobject]@{Id='Support';Status='Checked';CheckedAt='fixture';Data=@([pscustomobject]@{Status='InSupportUntil';EndDate=[datetime]'2028-10-10';Source='fixture';Detail='fixture'})})
 $assessed.Checks+=@([pscustomobject]@{Id='Updates';Status='Checked';CheckedAt='fixture';Data=@([pscustomobject]@{Updates=@();RebootRequired=$false;Scope='fixture'})})
 $assessed=Add-ReportAnalysis $assessed
-Assert (@($assessed.Analysis.Findings|Where-Object {$_.Title -eq 'Soporte Windows y ESU/LTSC' -and $_.Level -eq 'OK'}).Count -eq 1) 'Supported version is favorable rather than generic review'
+Assert (@($assessed.Analysis.Findings|Where-Object {$_.Title -eq 'Soporte de Windows' -and $_.Level -eq 'OK'}).Count -eq 1) 'Supported version is favorable rather than generic review'
 Assert (@($assessed.Analysis.Findings|Where-Object {$_.Title -eq 'Parches Windows' -and $_.Level -eq 'OK'}).Count -eq 1) 'No offered updates is favorable within measured scope'
 ($assessed.Checks|Where-Object Id -eq Updates).Data[0].Updates=@([pscustomobject]@{Security=$true})
 $assessed=Add-ReportAnalysis $assessed

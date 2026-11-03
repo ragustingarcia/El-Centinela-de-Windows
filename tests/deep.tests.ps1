@@ -106,7 +106,7 @@ try{
     @{schema_version='unknown';exit_code=0}|ConvertTo-Json|Set-Content $ioc
     Reject {Read-IocReport $ioc} 'Unknown IOC contract never accepted as clean'
 }finally{
-    if(-not $fixture.StartsWith($PSScriptRoot+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe cleanup'}
+    if(-not $fixture.StartsWith(($PSScriptRoot+[IO.Path]::DirectorySeparatorChar),[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe cleanup'}
     Remove-Item -LiteralPath $fixture -Recurse -Force
 }
 $scanner=Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party/zero-breach/scanner.py'

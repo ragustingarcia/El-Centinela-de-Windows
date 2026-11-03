@@ -78,7 +78,7 @@ try {
  Assert ($refreshed.ActionHistory[0].Status -eq 'Verified') 'Refreshing baseline retains remediation history'
 } finally {
  if(Test-Path -LiteralPath $fixture){
-  if(-not $fixture.StartsWith($PSScriptRoot+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe cleanup'}
+  if(-not $fixture.StartsWith(($PSScriptRoot+[IO.Path]::DirectorySeparatorChar),[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe cleanup'}
   $link=Join-Path $fixture 'Temp\redirect';if(Test-Path -LiteralPath $link){[IO.Directory]::Delete($link)}
   Remove-Item -LiteralPath $fixture -Recurse -Force
  }
