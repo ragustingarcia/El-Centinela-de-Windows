@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/interplains/Zero-Breach-Toolkit",
+  "commit": "ebc50fb160cebc6063c1164e670e3503d01a9613",
+  "build": "python build/bundle.py ROOT scanner.py",
+  "sha256": "bb0e6a7a36ee659c0494d02e9f7495d5fd4701f1ab7e57529e79925cb581ae15",
+  "source_license": "Apache-2.0",
+  "curated_ioc_license": "CC0-1.0",
+  "changes": "Standalone generated bundle, unmodified. Integrated as optional scanner requiring an existing Python interpreter."
+}
