@@ -1,83 +1,31 @@
-# 🛡️ El Centinela de Windows
+# El Centinela de Windows 0.2.0-rc.1
 
-![El Centinela de Windows — limpiador y optimizador para cualquiera](./assets/og-image.png)
+![El Centinela de Windows](assets/og-image.png)
 
-**Limpiador y optimizador de Windows para cualquiera.** Diagnostica antes de tocar nada, siempre pregunta antes de actuar, y nunca borra lo que no reconoce.
+Release candidata usable de mantenimiento por usuario: diagnóstico de seguridad, reducción de sugerencias/publicidad con respaldo y deshacer, y limpieza de temporales antiguos con vista previa.
 
-Arranque, seguridad, privacidad, programas innecesarios, espacio en disco y apps de la Tienda preinstaladas — todo desde un menú, sin instalar nada.
+## Empezar
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](#)
+Descargar el ZIP de la release, extraerlo completo y abrir `El Centinela de Windows.bat`. Conservar `src` junto al BAT. Usa Windows PowerShell 5.1, sin instalar herramientas ni pedir administrador. Si una consulta exige más permisos, el informe muestra `Unavailable`; no significa que esté todo bien.
 
----
+1. **Diagnóstico:** Defender, proveedores antivirus, firewall efectivo, escuchas TCP, tareas, servicios, apps y ajustes de publicidad. No modifica configuración.
+2. **Privacidad:** vista previa, confirmación exacta, respaldo previo y comprobación de cada valor. Afecta esta cuenta; conservar las fotos de Spotlight. Windows puede restablecer ajustes en actualizaciones o por GPO/MDM. Puede requerir cerrar sesión.
+3. **Temporales:** solo archivos de Temp de esta cuenta, creados y modificados hace más de 14 días; nunca borrado recursivo de carpetas. Omite enlaces y rechaza rutas remotas. Cerrar instaladores y aplicaciones primero. El borrado es permanente.
+4. **Deshacer privacidad:** elegir el respaldo; conserva valores modificados después por otras apps. Respaldos locales bajo `%LOCALAPPDATA%/Centinela/State`, con acceso restringido.
+5. **Exportar:** JSON nuevo en la ruta elegida. Contiene datos privados; revisar antes de compartir. No sobrescribe archivos existentes.
 
-## Instalación
+## Seguridad y límites
 
-No hace falta instalar nada — funciona con el PowerShell que ya trae Windows 10/11:
+Ejecutar desde la sesión habitual de la cuenta a mantener. No desinstala antivirus, apps, servicios o drivers; no cambia reglas de firewall, RDP, cifrado ni políticas empresariales. Esas operaciones requieren validaciones adicionales y se conservan como tareas guiadas desde Windows.
 
-1. **Descargá el archivo**: botón verde **`<> Code` → `Download ZIP`**, y extraé el ZIP (clic derecho → *Extraer todo*).
-2. **Doble clic** en `El Centinela de Windows.bat`.
-3. Windows va a pedir **permisos de administrador** (los necesita para revisar el registro, servicios y Windows Defender) → **Sí**.
-4. Elegí una opción del menú. La **[1] Reporte completo** es la recomendada para empezar: muestra todo y no modifica nada.
+La detección de proveedores antivirus no prueba su salud. Una escucha local no demuestra exposición a Internet. No certifica ausencia de compromiso, no comprueba todas las CVE/ESU/LTSC y no incluye aún el motor opcional Zero-Breach-Toolkit. Las consultas de Windows no constituyen aislamiento de red.
 
-> **¿Windows te mostró un cartel azul ("Windows protegió tu PC")?** Es normal para archivos descargados de internet sin firma digital paga — no significa que haya un problema. Clic en **"Más información" → "Ejecutar de todas formas"**. Alternativa: clic derecho al `.bat` → Propiedades → tildar **Desbloquear** → Aceptar.
+Esta es una **prerelease**, no una versión estable certificada en toda combinación de hardware/edición. Ver [validación y límites](docs/SECURITY-CANDIDATE.md) y [cambios](CHANGELOG.md).
 
-Es re-ejecutable: lo que ya está resuelto se detecta solo y se saltea.
+## Desarrollo y validación
 
----
+Pruebas aisladas en Windows PowerShell 5.1 y PowerShell 7: `tests/security.tests.ps1`. Prueban registro simulado y archivos/ACL/enlaces reales exclusivamente dentro de fixtures descartables. El uso normal sigue utilizando PowerShell 5.1. Empaquetado reproducible: `python build/package.py DESTINO`.
 
-## Funcionalidades
+## Licencia y autor
 
-### 🔎 Reporte completo
-Corre las 6 categorías en modo solo-lectura. No modifica absolutamente nada — la forma segura de ver el estado real de la PC antes de decidir qué tocar.
-
-### 🚀 Arranque y persistencia
-Registro Run/RunOnce, carpetas de Startup, tareas programadas, servicios de terceros y los puntos de secuestro clásicos de Windows (Winlogon, AppInit_DLLs, LSA, IFEO, suscripciones WMI). Cada hallazgo se verifica contra su firma digital. Detecta apps que reescriben su propio arranque (Discord, Docker Desktop, Steam, etc.) y te dice en qué menú de la app apagarlo de raíz, en vez de un parche que vuelve.
-
-### 🛡️ Seguridad (Windows Defender)
-Estado de protección en tiempo real, último scan, exclusiones (limpia automáticamente las que apuntan a archivos que ya no existen), y te deja disparar un scan rápido o completo.
-
-### 🔕 Privacidad
-Apaga las 10 sugerencias/publicidad de Windows (recomendaciones del menú Inicio, apps instaladas en silencio, apps OEM, pantalla de bloqueo) — con las políticas de grupo que realmente persisten, no solo el toggle blando que Windows puede resincronizar solo.
-
-### 🧹 Programas conocidos como innecesarios
-Lista curada con dos niveles de confianza: verificado en una máquina real, o documentado por la comunidad pero no probado todavía. Nunca desinstala nada sin confirmación explícita.
-
-### 💾 Limpieza de disco
-Temporales de usuario y sistema, cache de Chrome/Edge, Papelera de reciclaje, descargas viejas de Windows Update, cache de Delivery Optimization. Muestra el tamaño de cada cosa antes de preguntar, y cuánto espacio liberaste al final.
-
-### 🏪 Apps de la Tienda preinstaladas
-Candy Crush, Disney+, TikTok, redes sociales y demás — con **lista blanca estricta**: solo se ofrece sacar lo explícitamente permitido, nunca nada por fuera de esa lista (muchos paquetes de la Tienda son piezas internas de Windows y sacar el equivocado puede romper el sistema).
-
----
-
-## Filosofía de seguridad
-
-- **Diagnóstico primero.** Todo hallazgo se muestra con contexto (firma digital, editor, ruta) antes de preguntar nada.
-- **Nunca actúa sin confirmación**, ítem por ítem, ni siquiera en la categoría de bloatware conocido.
-- **Lista blanca, no lista negra**, para todo lo que implica desinstalar software del sistema — se ofrece sacar lo explícitamente permitido, nunca "todo menos lo protegido".
-- **Re-ejecutable**, sin efectos secundarios por correrlo más de una vez.
-
----
-
-## Arquitectura
-
-Un solo archivo `.bat` con estructura híbrida: la parte batch solo pide permisos de administrador, y después se copia a un `.ps1` temporal que corre en **PowerShell 7 (`pwsh`) si está instalado, o en el Windows PowerShell 5.1 que trae todo Windows** — el script está validado en ambos motores, así que no hay nada que instalar de antemano.
-
----
-
-## Datos estructurados
-
-Este repo incluye [`schema.json`](./schema.json) (JSON-LD `SoftwareApplication`), [`llms.txt`](./llms.txt) (resumen para asistentes de IA), [`ai.txt`](./ai.txt) (política de uso por IAs), [`robots.txt`](./robots.txt) y [`sitemap.xml`](./sitemap.xml) — mismo kit de atribución/SEO que uso en todos mis proyectos, adaptado acá a un repo sin dominio propio (la página del repo funciona como ancla).
-
----
-
-## Licencia
-
-[MIT](./LICENSE)
-
----
-
-## Autor
-
-**Rodolfo Agustín García** ([@ragustingarcia](https://github.com/ragustingarcia)) — [ragustingarcia.com](https://ragustingarcia.com/)
+[MIT](LICENSE). Rodolfo Agustín García ([@ragustingarcia](https://github.com/ragustingarcia)) — [ragustingarcia.com](https://ragustingarcia.com/).

@@ -1,0 +1,23 @@
+name: Security regression tests
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  isolated-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Windows PowerShell 5.1 isolated checks
+        shell: powershell
+        run: '& ./tests/security.tests.ps1'
+      - name: PowerShell 7 isolated checks
+        shell: pwsh
+        run: '& ./tests/security.tests.ps1'
+      - name: Reproducible release archive
+        shell: pwsh
+        run: |
+          python build/package.py package-a
+          python build/package.py package-b
+          if ((Get-FileHash package-a/*.zip).Hash -ne (Get-FileHash package-b/*.zip).Hash) { throw 'Non-reproducible archive' }
