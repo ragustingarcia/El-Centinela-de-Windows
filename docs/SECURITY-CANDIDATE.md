@@ -21,3 +21,12 @@ La comprobaci贸n de rutas reduce selecciones err贸neas y redirecciones, pero no 
 Los toggles de publicidad son preferencias por usuario y no garantizan aplicaci贸n/persistencia en todas las builds o frente a pol铆ticas administradas. Un valor verificado significa que el registro qued贸 en el valor esperado, no prueba visual de toda publicidad eliminada.
 
 Pendientes fuera de esta release: desinstaladores con adaptadores confiables, cat谩logo Appx exacto, endurecimiento avanzado de seguridad, cobertura de parches/soporte y adaptador opcional IOC de Zero-Breach. El diagn贸stico no es una prueba de ausencia de brechas.
+
+
+## Actualizaci髇 rc.2: resumen y soluciones
+
+El diagn髎tico interpreta estados y conserva datos crudos. Distingue riesgo de configuraci髇 de vulnerabilidad CVE confirmada. El resumen y JSON incluyen cobertura y resultados de acciones; exportan a una carpeta nueva del Escritorio obtenido con Known Folder, incluidos escritorios redirigidos o sincronizados. El detalle conserva datos privados.
+
+Las acciones autom醫icas solo usan IDs fijos: actualizaci髇 de firmas, solicitud de an醠isis r醦ido y activaci髇 de protecci髇 en tiempo real. Reconsultan modo de Defender antes de actuar y estado despu閟. No fuerzan modo activo frente a antivirus tercero, no evitan Tamper Protection ni elevan autom醫icamente. Un an醠isis puede remediar seg鷑 Defender; la confirmaci髇 lo indica. Una solicitud no implica an醠isis completado ni equipo libre de infecci髇.
+
+Las recomendaciones de firewall, puertos y pol韙icas siguen guiadas: no se cierran puertos ni se cambian reglas indiscriminadamente. Los estados favorables describen las se馻les observadas, no certifican el equipo. Las nuevas pruebas usan informes sint閠icos y comandos Defender simulados.

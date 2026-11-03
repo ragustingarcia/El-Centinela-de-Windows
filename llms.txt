@@ -1,3 +1,5 @@
-# El Centinela de Windows 0.2.0-rc.1
+# El Centinela de Windows 0.2.0-rc.2
 
 Mantenimiento por usuario: diagnostico defensivo, preferencias de publicidad con respaldo/deshacer y limpieza de temporales antiguos previa confirmacion. Prerelease sin certificacion de ausencia de compromiso. No incluye motor IOC. Requiere ZIP completo con BAT y src. Autor: Rodolfo Agustin Garcia, https://ragustingarcia.com/.
+
+Resumen interpretado, propuestas Defender y exportacion del ultimo diagnostico al Escritorio en TXT/JSON. No detecta todas las CVE ni certifica ausencia de compromiso.

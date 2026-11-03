@@ -11,10 +11,14 @@ jobs:
           persist-credentials: false
       - name: Windows PowerShell 5.1 isolated checks
         shell: powershell
-        run: '& ./tests/security.tests.ps1'
+        run: |
+          & ./tests/security.tests.ps1
+          & ./tests/summary.tests.ps1
       - name: PowerShell 7 isolated checks
         shell: pwsh
-        run: '& ./tests/security.tests.ps1'
+        run: |
+          & ./tests/security.tests.ps1
+          & ./tests/summary.tests.ps1
       - name: Reproducible release archive
         shell: pwsh
         run: |

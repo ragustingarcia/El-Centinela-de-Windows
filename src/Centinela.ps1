@@ -1,6 +1,6 @@
 ﻿param([switch]$LibraryOnly, [switch]$Audit, [string]$ReportPath)
 $ErrorActionPreference = 'Stop'
-$script:Version = '0.2.0-rc.1'
+$script:Version = '0.2.0-rc.2'
 $script:PrivacyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
 $script:PrivacyNames = @('SubscribedContent-338388Enabled','SubscribedContent-338389Enabled','SubscribedContent-353698Enabled','SystemPaneSuggestionsEnabled','SilentInstalledAppsEnabled','PreInstalledAppsEnabled','OemPreInstalledAppsEnabled','RotatingLockScreenOverlayEnabled','SoftLandingEnabled')
 function Confirm-Choice($Question) {
@@ -175,22 +175,14 @@ function Get-SecurityReport {
         Invoke-Check 'Apps' { Get-AppxPackage | Select-Object Name,Publisher,PackageFamilyName }
         Invoke-Check 'Privacy' { foreach($n in $script:PrivacyNames){ [pscustomobject]@{Name=$n;Value=(Read-PrivacyValue $n)} } }
     )
-    return [pscustomobject]@{ Schema=1; Version=$script:Version; Created=[DateTime]::UtcNow.ToString('o'); Sid=(Get-Identity); Checks=$checks; Gaps=@('No comprueba exposicion desde Internet, router, VPN ni compromiso desconocido.','No valida cobertura ESU/LTSC ni todas las actualizaciones/CVE.','No incluye motor IOC de Zero-Breach en esta version.','Escuchas TCP no implican accesibilidad externa. Proveedores AV no certifican salud efectiva.','No es una sandbox de red: las consultas de Windows pueden tener actividad de red del sistema.') }
-}
-function Show-Report($Report) {
-    foreach($c in $Report.Checks) {
-        Write-Host "`n[$($c.Status)] $($c.Id)"
-        if ($c.Error) { Write-Warning $c.Error }
-        else { ($c.Data | Format-List | Out-String) -replace '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u202a-\u202e\u2066-\u2069]','?' | Out-Host }
-    }
-    $Report.Gaps | ForEach-Object { Write-Warning $_ }
-    Write-Host 'Revisar Firewall desactivado, proteccion ausente y firmas antiguas en Seguridad de Windows. Mantener Windows y apps actualizados.'
+    return Add-ReportAnalysis ([pscustomobject]@{ Schema=1; Version=$script:Version; Created=[DateTime]::UtcNow.ToString('o'); Sid=(Get-Identity); Checks=$checks; Gaps=@('No comprueba exposicion desde Internet, router, VPN ni compromiso desconocido.','No valida cobertura ESU/LTSC ni todas las actualizaciones/CVE.','No incluye motor IOC de Zero-Breach en esta version.','Escuchas TCP no implican accesibilidad externa. Proveedores AV no certifican salud efectiva.','No es una sandbox de red: las consultas de Windows pueden tener actividad de red del sistema.') })
 }
 function Export-Report($Report,[string]$Path) {
     Test-LocalPath $Path | Out-Null
     $stream=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
     try { $bytes=[Text.Encoding]::UTF8.GetBytes(($Report|ConvertTo-Json -Depth 10));$stream.Write($bytes,0,$bytes.Length) } finally { $stream.Dispose() }
 }
+. (Join-Path $PSScriptRoot 'Summary.ps1')
 if ($LibraryOnly) { return }
 if ($Audit) {
     $report=Get-SecurityReport; Show-Report $report
@@ -200,12 +192,20 @@ if ($Audit) {
 Write-Host "El Centinela de Windows $script:Version - usuario: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 Write-Host 'Los cambios afectan esta cuenta. Ejecutar desde su sesion habitual; no requiere administrador. Cerrar instaladores antes de limpiar.'
 while ($true) {
-    Write-Host "`n[1] Diagnostico de seguridad y aplicaciones [2] Reducir publicidad [3] Limpiar temporales antiguos [4] Deshacer privacidad [5] Exportar diagnostico [0] Salir"
+    Show-MainMenu
     $choice=Read-Host 'Opcion'
     if (-not $choice -or $choice -eq '0') { return }
     try {
         switch ($choice) {
-            '1' { Show-Report (Get-SecurityReport) }
+            '1' {
+                $script:LastReport=Get-SecurityReport; Show-Report $script:LastReport
+                $follow=Read-Host '[E] Exportar al Escritorio / [S] Soluciones / [D] Detalle / Enter menu'
+                switch(([string]$follow).ToUpperInvariant()) {
+                    'E' { Write-Host (Export-DesktopReport $script:LastReport) }
+                    'S' { Show-Solutions $script:LastReport }
+                    'D' { Show-Details $script:LastReport }
+                }
+            }
             '2' {
                 $plan=@(New-PrivacyPlan); $plan | Format-Table Name,Before,After | Out-Host
                 Write-Host 'Ajustes de sugerencias por usuario; no modifica GPO/MDM ni garantiza persistencia tras actualizaciones. Conserva fotos de Spotlight. Puede requerir cerrar sesion.'
@@ -227,13 +227,12 @@ while ($true) {
                 if ($index -ne '' -and [int]::TryParse($index,[ref]$number) -and $number -ge 0 -and $number -lt $files.Count -and (Confirm-Choice 'Restaurar ajustes de este respaldo?')) { (Undo-Privacy $files[$number].FullName).Entries | Format-Table Name,Status | Out-Host }
             }
             '5' {
-                Write-Host 'El informe contiene rutas, comandos y datos de esta cuenta. Elegir una carpeta privada fuera de sincronizacion si corresponde.'
-                $path=Read-Host 'Ruta absoluta para un JSON nuevo (Enter cancela)'
-                if ($path) {
-                    Export-Report (Get-SecurityReport) $path
-                    Write-Host "Informe: $path"
-                }
+                if(-not $script:LastReport){Write-Host 'Primero ejecutar opcion 1.';continue}
+                Write-Host 'Se guardaran resumen TXT y detalle JSON del mismo diagnostico, con advertencias y acciones. El Escritorio puede estar sincronizado y el informe contiene datos privados.'
+                if(Confirm-Choice 'Exportar al Escritorio?'){Write-Host (Export-DesktopReport $script:LastReport)}
             }
+            '6' {if($script:LastReport){Show-Details $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
+            '7' {if($script:LastReport){Show-Solutions $script:LastReport}else{Write-Host 'Primero ejecutar opcion 1.'}}
         }
     } catch { Write-Warning $_.Exception.Message }
 }

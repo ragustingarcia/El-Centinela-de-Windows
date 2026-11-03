@@ -1,5 +1,14 @@
 # Cambios
 
+## 0.2.0-rc.2
+
+- Menú legible con opciones en líneas separadas, resumen general y detalle técnico separado.
+- Análisis de protección, firmas, firewall y escuchas con niveles y propuestas; lagunas siempre visibles.
+- Exportación directa al Escritorio real: TXT legible y JSON del mismo diagnóstico, con advertencias e historial de acciones.
+- Acciones Defender elegidas individualmente: firmas, análisis rápido y activación de protección cuando corresponde; permisos y verificación posterior explícitos.
+- Sin escaneo silencioso al exportar, sin elevación automática y sin presentar una solicitud de análisis como ausencia de infección.
+
+
 ## 0.2.0-rc.1 â€” 2026-11-02
 
 - Release candidata con diagnÃ³stico, privacidad reversible y limpieza controlada de temporales antiguos.
