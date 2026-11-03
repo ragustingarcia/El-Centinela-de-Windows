@@ -32,7 +32,8 @@ function Get-NetworkInvestigation {
     [pscustomobject]@{
         Listeners=@($listeners)
         Routes=@(Get-NetRoute -ErrorAction Stop|Where-Object DestinationPrefix -in @('0.0.0.0/0','::/0')|Select-Object InterfaceAlias,NextHop,RouteMetric)
-        VPN=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop|Where-Object {$_.Status -eq 'Up'}|Select-Object Name,InterfaceDescription,Status)
+        Adapters=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop|Where-Object {$_.Status -eq 'Up'}|Select-Object Name,InterfaceDescription,Status)
+        VPNProfiles=(Invoke-Check 'VPNProfiles' { @((Get-VpnConnection -ErrorAction Stop))+@((Get-VpnConnection -AllUserConnection -ErrorAction Stop))|Select-Object Name,TunnelType,ConnectionStatus,ServerAddress })
         InboundRules=@($ruleDetails)
         Note='Reglas efectivas con programa/puertos/direcciones para correlacion con escuchas; filtros de servicio/IPsec/paquetes pueden requerir revision adicional. No permite inferir accesibilidad externa. VPN de terceros se muestra como adaptador, no se clasifica por nombre.'
     }
@@ -151,6 +152,7 @@ function Show-NetworkInvestigation {
 }
 function Add-DeepResult($Report,$Id,[scriptblock]$Read) {
     $result=Invoke-Check $Id $Read
+    if($Id -eq 'PublicProbe'){ $prior=@($Report.Checks|Where-Object Id -eq $Id|ForEach-Object {$_.Data});$result.Data=@((@($prior)+@($result.Data))|Select-Object -Last 50) }
     $Report.Checks=@($Report.Checks|Where-Object Id -ne $Id)+@($result)
     Add-ReportAnalysis $Report|Out-Null
     $result.Data|Format-List|Out-Host
