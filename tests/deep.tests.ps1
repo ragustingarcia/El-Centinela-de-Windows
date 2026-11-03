@@ -20,6 +20,7 @@ $script:rules=0;$script:journal=0
 function Test-IsAdmin {return $false}
 Reject {Block-VerifiedListener 5000 100 'C:\App\app.exe'} 'Block requires elevation'
 function Test-IsAdmin {return $true}
+Reject {Invoke-IocScan} 'User Python never launched from elevated menu'
 function New-NetFirewallRule {param($Name,$DisplayName,$Direction,$Action,$Protocol,$LocalPort,$Program,$Profile,$ErrorAction) if(-not $script:journal){throw 'Backup missing'};$script:rules++}
 function Get-CimInstance {param($ClassName,$Filter,$OperationTimeoutSec) [pscustomobject]@{ProcessId=100;Name='app.exe';ExecutablePath='C:\App\app.exe'}}
 function Get-NetTCPConnection {param($State,$LocalPort,$ErrorAction) [pscustomobject]@{OwningProcess=100;LocalPort=5000}}
@@ -27,6 +28,7 @@ function Get-StateFolder {return $PSScriptRoot}
 function Save-Journal {param($Journal,$Path) $script:journal++}
 function Get-NetFirewallRule {param($Name,$PolicyStore,$ErrorAction) [pscustomobject]@{Enabled='True';Action='Block'}}
 Reject {Block-VerifiedListener 3389 100 'C:\App\app.exe'} 'Remote administration port protected'
+Reject {Block-VerifiedListener 22 100 'C:\App\app.exe'} 'SSH administration port protected'
 Reject {Block-VerifiedListener 5000 4 'C:\App\app.exe'} 'System process protected'
 Reject {Block-VerifiedListener 5000 100 'C:\Changed.exe'} 'Changed program rejected'
 Assert ($script:rules -eq 0) 'No writes for rejected selection'
@@ -73,14 +75,15 @@ $cves=Get-CveCorrelation $cveReport
 Assert ($cves.Gaps.Count -eq 3 -and $cves.Sources.Count -eq 0) 'Failed CVRF sources preserved as coverage gaps'
 $script:publicResult='success';$script:checkHostCalls=0;$script:consent=$true
 function Confirm-Choice {param($Question) return $script:consent}
-function Invoke-RestMethod {param($Uri,$Headers,$TimeoutSec,$ErrorAction)
+function Invoke-RestMethod {param($Uri,$Headers,$TimeoutSec,$ErrorAction,$Method,$ContentType,$Body)
     if($Uri -like '*ipify*'){return [pscustomobject]@{ip='8.8.8.8'}}
-    if($Uri -like '*/check-tcp*'){$script:checkHostCalls++;return [pscustomobject]@{ok=1;request_id='abc123';nodes=[pscustomobject]@{fixture=@('test')}}}
-    if($script:publicResult -eq 'success'){return [pscustomobject]@{fixture=@([pscustomobject]@{time=0;address='8.8.8.8'})}}
-    if($script:publicResult -eq 'wrong'){return [pscustomobject]@{fixture=@([pscustomobject]@{time=0.1;address='1.1.1.1'})}}
-    return [pscustomobject]@{fixture=@([pscustomobject]@{error='fixture timeout'})}
+    if($Method -eq 'Post'){$script:checkHostCalls++;$script:publicBody=$Body|ConvertFrom-Json;return [pscustomobject]@{id='abc123';probesCount=1}}
+    $address=if($script:publicResult -eq 'wrong'){'1.1.1.1'}else{'8.8.8.8'}
+    $received=if($script:publicResult -eq 'error'){0}else{1}
+    [pscustomobject]@{id='abc123';type='ping';status='finished';target='8.8.8.8';measurementOptions=[pscustomobject]@{protocol='TCP';port=5000};results=@([pscustomobject]@{probe=@{country='fixture'};result=[pscustomobject]@{status='finished';resolvedAddress=$address;stats=[pscustomobject]@{total=1;rcv=$received};timings=@([pscustomobject]@{rtt=0})}})}
 }
 Assert ((Get-PublicProbe 5000 '4').Status -eq 'Reachable') 'External provider positive evidence accepted including zero-time response'
+Assert ($script:publicBody.target -eq '8.8.8.8' -and $script:publicBody.limit -eq 1 -and $script:publicBody.measurementOptions.protocol -eq 'TCP') 'External request limited to consented literal target and TCP probe'
 $script:publicResult='wrong'
 Assert ((Get-PublicProbe 5000 '4').Status -eq 'Unknown') 'External response for wrong address never proves exposure'
 $script:publicResult='error'
@@ -108,7 +111,7 @@ try{
 }
 $scanner=Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party/zero-breach/scanner.py'
 Assert ((Get-FileHash -LiteralPath $scanner -Algorithm SHA256).Hash -eq 'BB0E6A7A36EE659C0494D02E9F7495D5FD4701F1AB7E57529E79925CB581AE15') 'Bundled IOC engine matches reviewed hash'
-$contract=(& python -I -X utf8 $scanner --describe)|ConvertFrom-Json
+$contract=(& python -I -S -X utf8 $scanner --describe)|ConvertFrom-Json
 Assert ($LASTEXITCODE -eq 0 -and $contract.schema_version -eq '1.6') 'Bundled IOC describe contract compatible without running scan'
 $summary=[pscustomobject]@{Engine=$PSVersionTable.PSVersion.ToString();Passed=$script:passed;Boundary='Mocked networking, support responses, firewall and update commands; synthetic IOC/external reports. No real network changes or updates installed.'}
 if($ResultPath){$summary|ConvertTo-Json|Set-Content -LiteralPath $ResultPath -Encoding UTF8}

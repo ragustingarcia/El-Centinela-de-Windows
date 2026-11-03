@@ -19,7 +19,7 @@ function Get-NetworkInvestigation {
     $processes=@{};foreach($p in Get-CimInstance Win32_Process -OperationTimeoutSec 15){$processes[[int]$p.ProcessId]=$p}
     $listeners=foreach($l in Get-NetTCPConnection -State Listen -ErrorAction Stop){
         $p=$processes[[int]$l.OwningProcess]
-        [pscustomobject]@{Address=$l.LocalAddress;Port=$l.LocalPort;ProcessId=$l.OwningProcess;Process=$p.Name;Executable=$p.ExecutablePath;Scope=$(if($l.LocalAddress -eq '::1' -or $l.LocalAddress -match '^127\.'){ 'Loopback' }else{'Network'});CanBlock=($l.OwningProcess -gt 4 -and $l.LocalPort -notin @(135,139,445,3389,5985,5986) -and [bool]$p.ExecutablePath -and -not $p.ExecutablePath.StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase))}
+        [pscustomobject]@{Address=$l.LocalAddress;Port=$l.LocalPort;ProcessId=$l.OwningProcess;Process=$p.Name;Executable=$p.ExecutablePath;Scope=$(if($l.LocalAddress -eq '::1' -or $l.LocalAddress -match '^127\.'){ 'Loopback' }else{'Network'});CanBlock=($l.OwningProcess -gt 4 -and $l.LocalPort -notin @(22,135,139,445,3389,5900,5938,5985,5986) -and [bool]$p.ExecutablePath -and -not $p.ExecutablePath.StartsWith($env:SystemRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase))}
     }
     $rules=@(Get-NetFirewallRule -PolicyStore ActiveStore -Direction Inbound -Enabled True -ErrorAction Stop)
     if($rules.Count -gt 1000){throw 'Mas de 1000 reglas; investigacion cancelada para no presentar cobertura incompleta como completa.'}
@@ -32,7 +32,8 @@ function Get-NetworkInvestigation {
     [pscustomobject]@{
         Listeners=@($listeners)
         Routes=@(Get-NetRoute -ErrorAction Stop|Where-Object DestinationPrefix -in @('0.0.0.0/0','::/0')|Select-Object InterfaceAlias,NextHop,RouteMetric)
-        VPN=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop|Where-Object {$_.Status -eq 'Up'}|Select-Object Name,InterfaceDescription,Status)
+        Adapters=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop|Where-Object {$_.Status -eq 'Up'}|Select-Object Name,InterfaceDescription,Status)
+        VPNProfiles=(Invoke-Check 'VPNProfiles' { @((Get-VpnConnection -ErrorAction Stop))+@((Get-VpnConnection -AllUserConnection -ErrorAction Stop))|Select-Object Name,TunnelType,ConnectionStatus,ServerAddress })
         InboundRules=@($ruleDetails)
         Note='Reglas efectivas con programa/puertos/direcciones para correlacion con escuchas; filtros de servicio/IPsec/paquetes pueden requerir revision adicional. No permite inferir accesibilidad externa. VPN de terceros se muestra como adaptador, no se clasifica por nombre.'
     }
@@ -103,7 +104,7 @@ function Get-CveCorrelation($Report) {
 }
 function Block-VerifiedListener([int]$Port,[int]$ProcessId,[string]$ExpectedProgram) {
     if(-not (Test-IsAdmin)){throw 'Requiere administrador para crear una regla de firewall.'}
-    if($ProcessId -le 4 -or $Port -lt 1 -or $Port -gt 65535 -or $Port -in @(135,139,445,3389,5985,5986)){throw 'Servicio del sistema/administracion protegido; requiere evaluacion especifica.'}
+    if($ProcessId -le 4 -or $Port -lt 1 -or $Port -gt 65535 -or $Port -in @(22,135,139,445,3389,5900,5938,5985,5986)){throw 'Servicio del sistema/administracion protegido; requiere evaluacion especifica.'}
     $p=Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -OperationTimeoutSec 15
     if(-not $p.ExecutablePath -or $p.ExecutablePath -ne $ExpectedProgram){throw 'El proceso o su ejecutable cambiaron; repetir investigacion.'}
     Test-LocalPath $p.ExecutablePath|Out-Null
@@ -151,6 +152,7 @@ function Show-NetworkInvestigation {
 }
 function Add-DeepResult($Report,$Id,[scriptblock]$Read) {
     $result=Invoke-Check $Id $Read
+    if($Id -eq 'PublicProbe'){ $prior=@($Report.Checks|Where-Object Id -eq $Id|ForEach-Object {$_.Data});$result.Data=@((@($prior)+@($result.Data))|Select-Object -Last 50) }
     $Report.Checks=@($Report.Checks|Where-Object Id -ne $Id)+@($result)
     Add-ReportAnalysis $Report|Out-Null
     $result.Data|Format-List|Out-Host
@@ -166,7 +168,7 @@ function Show-DeepMenu($Report) {
     Write-Host '[7] Instalar parches de seguridad previamente consultados'
     Write-Host '[8] Importar prueba ejecutada desde otra red'
     Write-Host '[9] Correlacion CVE/KB con Microsoft MSRC (online)'
-    Write-Host '[10] Prueba externa voluntaria sin servidor propio (Check-Host)'
+    Write-Host '[10] Prueba externa voluntaria sin servidor propio (Globalping)'
     $choice=Read-Host 'Comprobacion (Enter vuelve)'
     switch($choice){
         '1' {Add-DeepResult $Report 'NetworkInvestigation' {Show-NetworkInvestigation}}
@@ -175,7 +177,7 @@ function Show-DeepMenu($Report) {
         '4' {if(Confirm-Choice 'Consultar tabla oficial de soporte por Internet?'){Add-DeepResult $Report 'Support' {Get-SupportAssessment}}}
         '9' {if(Confirm-Choice 'Consultar CVRF Microsoft de los ultimos 3 meses?'){Add-DeepResult $Report 'CVE' {Get-CveCorrelation $Report}}}
         '10' {
-            Write-Host 'IPify recibira la consulta de IP publica; Check-Host recibira esa IP y el puerto, y puede conservar/publicar el reporte. No envia inventarios ni informes de la PC.'
+            Write-Host 'IPify recibira la consulta de IP publica; Globalping recibira esa IP y el puerto, y puede conservar/publicar el reporte. No envia inventarios ni informes de la PC.'
             $portText=Read-Host 'Un puerto TCP propio a comprobar';$port=0
             $family=Read-Host 'Familia de salida a comprobar: 4 (IPv4) o 6 (IPv6)'
             if([int]::TryParse($portText,[ref]$port) -and $port -ge 1 -and $port -le 65535 -and $family -in @('4','6') -and (Confirm-Choice 'Consultar servicios externos para esta prueba?')){
@@ -223,29 +225,30 @@ function Get-PublicProbe([int]$Port,[ValidateSet('4','6')][string]$Family='4') {
     if($b.Length -eq 4 -and ($b[0] -in @(0,10,127) -or $b[0] -ge 224 -or ($b[0] -eq 169 -and $b[1] -eq 254) -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127))){throw 'IP privada/compartida no valida para la prueba publica.'}
     if($b.Length -eq 16 -and (($b[0] -band 254) -eq 252 -or $ip.IsIPv4MappedToIPv6)){throw 'Direccion IPv6 no global o mapeada; elegir la familia correcta.'}
     Write-Host "La IP de salida observada es $ip; se comprobara TCP $Port desde un nodo externo."
-    if(-not (Confirm-Choice 'Confirmas que controlas/autorizas esa IP y que no es una salida VPN/corporativa/compartida ajena?')){throw 'Prueba externa cancelada antes de enviar el objetivo a Check-Host.'}
-    $hostTarget=if($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6){'['+$ip.ToString()+']:'+$Port}else{$ip.ToString()+':'+$Port}
-    $uri='https://check-host.net/check-tcp?host='+[uri]::EscapeDataString($hostTarget)+'&max_nodes=1'
-    $request=Invoke-RestMethod -Uri $uri -Headers @{Accept='application/json'} -TimeoutSec 15 -ErrorAction Stop
-    if($request.ok -ne 1 -or [string]$request.request_id -notmatch '^[a-fA-F0-9]{1,64}$'){throw 'El servicio externo no acepto una solicitud verificable.'}
+    if(-not (Confirm-Choice 'Confirmas que controlas/autorizas esa IP y que no es una salida VPN/corporativa/compartida ajena?')){throw 'Prueba externa cancelada antes de enviar el objetivo a Globalping.'}
+    $body=@{type='ping';target=$ip.ToString();limit=1;measurementOptions=@{protocol='TCP';port=$Port;packets=1}}|ConvertTo-Json -Depth 5 -Compress
+    $request=Invoke-RestMethod -Uri 'https://api.globalping.io/v1/measurements' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 20 -ErrorAction Stop
+    if([string]$request.id -notmatch '^[A-Za-z0-9]{1,64}$' -or $request.probesCount -ne 1){throw 'El proveedor no devolvio una solicitud verificable.'}
     $status='Pending';$nodes=@()
     for($attempt=0;$attempt -lt 5;$attempt++){
-        $response=Invoke-RestMethod -Uri ('https://check-host.net/check-result/'+$request.request_id) -Headers @{Accept='application/json'} -TimeoutSec 12 -ErrorAction Stop
-        foreach($node in $response.PSObject.Properties){
-            if($null -eq $node.Value){continue}
-            foreach($value in @($node.Value)){
-                if($null -eq $value){continue}
-                if($value.PSObject.Properties['time'] -and ($value.time -is [double] -or $value.time -is [int] -or $value.time -is [long] -or $value.time -is [decimal]) -and $value.time -ge 0 -and -not [double]::IsNaN([double]$value.time) -and -not [double]::IsInfinity([double]$value.time)){
-                    $answer=$null
-                    if([Net.IPAddress]::TryParse([string]$value.address,[ref]$answer) -and $answer.Equals($ip)){$status='Reachable'}else{$status='Unknown'}
-                }elseif($value.PSObject.Properties['error']){$status='NoConnection'}else{$status='Unknown'}
-                $nodes+=[pscustomobject]@{Node=$node.Name;Result=$value}
+        $response=Invoke-RestMethod -Uri ('https://api.globalping.io/v1/measurements/'+$request.id) -TimeoutSec 12 -ErrorAction Stop
+        if($response.status -eq 'finished'){
+            $status='Unknown';$nodes=@($response.results)
+            if($response.id -eq $request.id -and $response.type -eq 'ping' -and $response.target -eq $ip.ToString() -and $response.measurementOptions.protocol -eq 'TCP' -and $response.measurementOptions.port -eq $Port -and $nodes.Count -eq 1){
+                $detail=$nodes[0].result;$answer=$null
+                if($detail.status -eq 'finished' -and [Net.IPAddress]::TryParse([string]$detail.resolvedAddress,[ref]$answer) -and $answer.Equals($ip)){
+                    $validRtt=@($detail.timings|Where-Object { ($_.rtt -is [int] -or $_.rtt -is [long] -or $_.rtt -is [double] -or $_.rtt -is [decimal]) -and $_.rtt -ge 0 -and -not [double]::IsNaN([double]$_.rtt) -and -not [double]::IsInfinity([double]$_.rtt) })
+                    if(($detail.stats.rcv -is [int] -or $detail.stats.rcv -is [long]) -and $detail.stats.rcv -gt 0 -and $validRtt.Count){$status='Reachable'}
+                    elseif(($detail.stats.total -is [int] -or $detail.stats.total -is [long]) -and $detail.stats.total -gt 0 -and $detail.stats.rcv -eq 0){$status='NoConnection'}
+                }
             }
+            break
         }
-        if($status -ne 'Pending'){break};Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 1
     }
-    [pscustomobject]@{Provider='Check-Host.net';Target=$ip.ToString();Family=$Family;Port=$Port;Status=$status;At=[datetime]::UtcNow.ToString('o');RequestId=$request.request_id;EvidenceLink=('https://check-host.net/check-report/'+$request.request_id);Nodes=$nodes;Scope='Un nodo externo, una IP/familia/puerto y fecha. Puede ser router/VPN/NAT u otro dispositivo; correlacionar con red local. NoConnection/Unknown/Pending no acreditan seguridad.'}
+    [pscustomobject]@{Provider='Globalping';Target=$ip.ToString();Family=$Family;Port=$Port;Status=$status;At=[datetime]::UtcNow.ToString('o');RequestId=$request.id;EvidenceLink=('https://api.globalping.io/v1/measurements/'+$request.id);Nodes=$nodes;Scope='Un nodo externo, una IP/familia/puerto y fecha. Puede ser router/VPN/NAT u otro dispositivo; correlacionar con red local. NoConnection/Unknown/Pending no acreditan seguridad.'}
 }
+
 function Get-KnownPython {
     $base=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Python'
     if(Test-Path -LiteralPath $base){foreach($d in Get-ChildItem -LiteralPath $base -Directory|Sort-Object Name -Descending){
@@ -261,6 +264,7 @@ function Read-IocReport([string]$Path) {
     [pscustomobject]@{Engine='Zero-Breach-Toolkit';Schema=$doc.schema_version;ExitCode=$doc.exit_code;Verdict=$doc.verdict;Coverage=$doc.coverage;Caveats=$doc.must_relay;NextSteps=$doc.next_steps;EvidenceReport=$Path;Warning='Sin coincidencias no equivale a ausencia de compromiso. No borrar evidencia automaticamente.'}
 }
 function Invoke-IocScan {
+    if(Test-IsAdmin){throw 'Ejecutar el menu sin administrador para IOC; solo el helper de firewall debe elevarse. No se ejecuta Python de usuario con privilegios altos.'}
     $exe=Get-KnownPython
     $scanner=Join-Path (Split-Path $PSScriptRoot -Parent) 'third_party\zero-breach\scanner.py'
     if((Get-FileHash -LiteralPath $scanner -Algorithm SHA256).Hash -ne 'BB0E6A7A36EE659C0494D02E9F7495D5FD4701F1AB7E57529E79925CB581AE15'){throw 'Motor IOC alterado; se rechaza su ejecucion.'}
@@ -270,7 +274,7 @@ function Invoke-IocScan {
         $isolation=Invoke-ElevatedSecurity 'IsolatePython' @{}
         if($isolation.Status -ne 'Verified'){throw 'Aislamiento de red no verificado. No se ejecuta el analisis IOC.'}
         $rule=$isolation.Rule
-        & $exe -I -X utf8 $scanner --no-menu --json $json --report $txt
+        & $exe -I -S -X utf8 $scanner --no-menu --json $json --report $txt
         $code=$LASTEXITCODE
         if($code -notin @(0,2,3) -or -not (Test-Path -LiteralPath $json)){throw "Analisis incompleto/error de ejecucion ($code). Revisar archivos guardados en $folder"}
         $result=Read-IocReport $json

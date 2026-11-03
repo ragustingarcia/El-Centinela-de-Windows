@@ -14,7 +14,7 @@ function Convert-ObservedDate($Value) {
 function Get-ReportAnalysis($Report) {
     $findings=New-Object 'Collections.Generic.List[object]'
     foreach($check in $Report.Checks) {
-        if($check.Status -ne 'Checked') { $findings.Add((New-Finding 'Unknown' $check.Id ('No se pudo comprobar: '+$check.Error) '' 'Revisar permisos y repetir el diagnostico.')) }
+        if($check.Status -ne 'Checked') { $action=if($check.Id -in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe','PublicProbe')){'DeepChecks'}else{''};$findings.Add((New-Finding 'Unknown' $check.Id ('No se pudo comprobar: '+$check.Error) $action 'Revisar permisos y repetir la comprobacion desde su menu.')) }
     }
     $d=@(Get-CheckData $Report 'Defender')
     if($d.Count) {
@@ -61,26 +61,53 @@ function Get-ReportAnalysis($Report) {
     if($privacy.Count){$findings.Add((New-Finding 'Review' 'Preferencias de publicidad' ("$($privacy.Count) ajustes no estan explicitamente desactivados; ausencia no demuestra publicidad activa.") 'Privacy' 'Usar Reducir publicidad, con respaldo y deshacer.'))}
     $health=@(Get-CheckData $Report 'AntivirusHealth')
     if($health.Count){$findings.Add((New-Finding $(if($health[0].Code -eq 0){'OK'}else{'Review'}) 'Salud de proveedor antivirus' ([string]$health[0].Health) '' $health[0].Scope))}
+    $imported=@($Report.Checks|Where-Object { $_.Id -eq 'ExternalProbe' -and $_.Status -eq 'Checked' }).Count -gt 0
     foreach($id in @('NetworkInvestigation','Router','Support','Updates','CVE','IOC','ExternalProbe','PublicProbe')) {
         $title=@{NetworkInvestigation='Red, procesos y puertos';Router='Router';Support='Soporte Windows y ESU/LTSC';Updates='Parches Windows';CVE='Correlacion CVE Microsoft';IOC='Indicadores de compromiso';ExternalProbe='Prueba externa importada';PublicProbe='Prueba externa mediante servicio'}[$id]
         $checks=@($Report.Checks|Where-Object Id -eq $id)
-        if(-not $checks.Count){$findings.Add((New-Finding 'Unknown' $title 'Comprobacion avanzada pendiente.' 'DeepChecks' 'Ejecutar desde opcion 8; las consultas online requieren confirmacion.'))}
-        elseif($checks[0].Status -eq 'Checked') {
-            $data=@($checks[0].Data)
-            $detail=if($id -eq 'Updates' -and $data.Count){[string]@($data[0].Updates).Count+' parches pendientes; revisar categoria de seguridad e instalar desde opcion 8.'}elseif($id -eq 'CVE' -and $data.Count){[string]@($data[0].Matches).Count+' correlaciones KB/CVE. '+$data[0].Scope}elseif($id -eq 'Support' -and $data.Count){'Resultado: '+$data[0].Status+' | Fuente: '+$data[0].Source}elseif($id -eq 'IOC' -and $data.Count){'Exit code: '+$data[0].ExitCode+' | '+($data[0].Verdict|ConvertTo-Json -Compress -Depth 4)}else{'Resultado guardado; alcance y evidencia en detalle/exportacion.'}
-            $detail+=' | Observado: '+$checks[0].CheckedAt
-            $findings.Add((New-Finding 'Review' $title $detail 'DeepChecks' 'Ver resultado y siguientes acciones en opcion 8. Checked significa que la consulta corrio, no que todo este resuelto.'))
-            if($data.Count -and $id -eq 'CVE' -and @($data[0].Gaps).Count){$findings.Add((New-Finding 'Unknown' 'Fuentes CVE incompletas' (@($data[0].Gaps) -join '; ') 'DeepChecks' 'Reintentar fuentes; cero coincidencias no acredita ausencia de vulnerabilidades.'))}
-            if($data.Count -and $id -eq 'Support' -and $data[0].Status -eq 'Unknown'){$findings.Add((New-Finding 'Unknown' 'Soporte sin confirmar' $data[0].Detail 'DeepChecks' 'Revisar la tabla oficial correspondiente al canal/edicion.'))}
-            if($data.Count -and $id -eq 'IOC'){
-                foreach($caveat in $data[0].Caveats){$text=if($caveat.text){$caveat.text}else{[string]$caveat};$findings.Add((New-Finding 'Review' 'Alcance IOC' $text))}
-                if($data[0].ExitCode -eq 2){$findings.Add((New-Finding 'Alert' 'Indicadores IOC para investigar' 'El motor encontro coincidencias accionables; conservar evidencias y revisar contexto. No se borran automaticamente.'))}
-                if($data[0].ExitCode -eq 3){$findings.Add((New-Finding 'Unknown' 'Analisis IOC incompleto' 'Hay lagunas de cobertura; consultar el informe original.'))}
+        if(-not $checks.Count){
+            if($id -eq 'ExternalProbe' -or ($id -eq 'PublicProbe' -and $imported)){continue}
+            $findings.Add((New-Finding 'Unknown' $title 'Comprobacion avanzada pendiente.' 'DeepChecks' 'Ejecutar desde opcion 8; las consultas online requieren confirmacion.'));continue
+        }
+        if($checks[0].Status -ne 'Checked'){continue}
+        $data=@($checks[0].Data);if(-not $data.Count){$findings.Add((New-Finding 'Unknown' $title 'La consulta no devolvio evidencia interpretable.' 'DeepChecks' 'Repetir desde opcion 8.'));continue}
+        $d=$data[0];$level='Info';$detail='Resultado guardado con su alcance. Revisar detalle para interpretar.'
+        switch($id){
+            'NetworkInvestigation' {
+                $count=@($d.Listeners|Where-Object Scope -eq 'Network').Count
+                $level=if($count){'Review'}else{'OK'}
+                $detail="$count escuchas TCP fuera de loopback; procesos, rutas, adaptadores y reglas incluidos. No demuestra que sean vulnerabilidades."
+                if($d.ActionResult){$detail+=' | Accion: '+$d.ActionResult.Status+' '+$d.ActionResult.Detail}
+                if($d.VPNProfiles -and $d.VPNProfiles.Status -ne 'Checked'){$findings.Add((New-Finding 'Unknown' 'Perfiles VPN Windows' $d.VPNProfiles.Error 'DeepChecks' 'Revisar cliente/permisos. Los adaptadores se inventarian por separado.'))}
             }
-            if($data.Count -and $id -eq 'PublicProbe'){
-                $findings.Add((New-Finding $(if($data[0].Status -in @('Pending','Unknown')){'Unknown'}else{'Review'}) 'Resultado externo TCP' ($data[0].Target+':'+$data[0].Port+' - '+$data[0].Status+' | '+$data[0].EvidenceLink) 'DeepChecks' $data[0].Scope))
+            'Router' {$count=@($d.Mappings|Where-Object Enabled -eq $true).Count;$level=if($count){'Review'}else{'Info'};$detail="$count mapeos UPnP habilitados publicados por el router. "+$d.Scope}
+            'Support' {$level=if($d.Status -eq 'InSupportUntil'){'OK'}elseif($d.Status -eq 'StandardSupportEnded'){'Review'}else{'Unknown'};$detail='Estado: '+$d.Status+' | Fin observado: '+$d.EndDate+' | Fuente: '+$d.Source+' | '+$d.Detail}
+            'Updates' {
+                $count=@($d.Updates).Count;$security=@($d.Updates|Where-Object Security -eq $true).Count
+                $level=if($security){'Alert'}elseif($count -or $d.RebootRequired){'Review'}else{'OK'}
+                $detail="$count parches ofrecidos; $security de seguridad. Reinicio requerido: $($d.RebootRequired). "+$d.Scope
+            }
+            'CVE' {
+                $level=if(@($d.Gaps).Count){'Unknown'}elseif(@($d.Matches).Count){'Review'}else{'Info'}
+                $detail=[string]@($d.Matches).Count+' correlaciones KB/CVE; '+@($d.Sources).Count+' fuentes consultadas. '+$d.Scope
+                if(@($d.Gaps).Count){$detail+=' | Fuentes pendientes: '+($d.Gaps -join '; ')}
+            }
+            'IOC' {
+                $level=if($d.ExitCode -eq 2){'Alert'}elseif($d.ExitCode -eq 3){'Unknown'}else{'Info'}
+                $detail='Exit code: '+$d.ExitCode+' | '+($d.Verdict|ConvertTo-Json -Compress -Depth 4)
+                foreach($caveat in $d.Caveats){$text=if($caveat.text){$caveat.text}else{[string]$caveat};$findings.Add((New-Finding 'Info' 'Alcance IOC' $text))}
+            }
+            'ExternalProbe' {$level=if(@($d.Results|Where-Object Status -eq Reachable).Count){'Review'}else{'Info'};$detail=$d.Target+' | '+$d.At+' | '+$d.Provenance+' | '+$d.Scope}
+            'PublicProbe' {
+                $level='Info';$detail='Muestras externas conservadas: '+$data.Count
+                foreach($probe in ($data|Group-Object Target,Family,Port|ForEach-Object {$_.Group[-1]})){
+                    $probeLevel=if($probe.Status -in @('Pending','Unknown')){'Unknown'}elseif($probe.Status -eq 'Reachable'){'Review'}else{'Info'}
+                    $findings.Add((New-Finding $probeLevel 'Resultado externo TCP' ($probe.Target+':'+$probe.Port+' - '+$probe.Status+' | '+$probe.At+' | '+$probe.EvidenceLink) 'DeepChecks' $probe.Scope))
+                }
             }
         }
+        $detail+=' | Observado: '+$checks[0].CheckedAt
+        $findings.Add((New-Finding $level $title $detail 'DeepChecks' 'Ver evidencia y siguientes acciones en opcion 8. Solo se proponen correcciones aplicables.'))
     }
     $verdict=if(@($findings|Where-Object Level -eq Alert).Count){'Hay configuraciones de proteccion que requieren atencion prioritaria.'}elseif(@($findings|Where-Object Level -eq Unknown).Count){'Diagnostico parcial: hay controles que no se pudieron confirmar.'}else{'Sin alertas en los controles interpretados. Revisar las recomendaciones y los limites de cobertura.'}
     [pscustomobject]@{
@@ -91,7 +118,7 @@ function Get-ReportAnalysis($Report) {
         Unknown=@($findings|Where-Object Level -eq Unknown).Count
         OK=@($findings|Where-Object Level -eq OK).Count
         Findings=$findings.ToArray()
-        Conclusion='Sin garantia de ausencia de compromiso. Los hallazgos son configuraciones y senales observadas; no un escaneo completo de vulnerabilidades/CVE.'
+        Conclusion='Los resultados describen lo observado en las fuentes y fechas indicadas; no garantizan ausencia de compromiso.'
     }
 }
 function Add-ReportAnalysis($Report) {
@@ -101,7 +128,7 @@ function Add-ReportAnalysis($Report) {
 function Get-ReportText($Report) {
     $a=$Report.Analysis
     $lines=@('EL CENTINELA DE WINDOWS - RESUMEN',"Version: $($Report.Version) | Diagnostico: $($Report.Created)",$a.Verdict,"Alertas: $($a.Alerts) | Revisar: $($a.Review) | Sin comprobar: $($a.Unknown) | Favorables: $($a.OK)",'')
-    $labels=@{OK='FAVORABLE';Alert='ALERTA';Review='REVISAR';Unknown='SIN COMPROBAR'}
+    $labels=@{OK='FAVORABLE';Alert='ALERTA';Review='REVISAR';Unknown='SIN COMPROBAR';Info='DATO'}
     foreach($f in $a.Findings){$lines+="[$($labels[$f.Level])] $($f.Title): $($f.Detail)";if($f.Advice){$lines+='  Propuesta: '+$f.Advice}}
     $lines+=@('','INVENTARIO Y CONTEXTO')
     foreach($id in @('Windows','RunCurrentUser','Tasks','Services','Apps')) {
@@ -113,7 +140,7 @@ function Get-ReportText($Report) {
             $lines+='Inicio de esta cuenta: '+$names.Count+' entradas. '+($names -join ', ')
         }else{$lines+=$id+': '+@($c[0].Data).Count+' elementos inventariados. Detalle disponible; su presencia no demuestra software innecesario o malicioso.'}
     }
-    $lines+=@('','LIMITES Y ADVERTENCIAS')+@($Report.Gaps)+@($a.Conclusion)
+    $lines+=@('','COBERTURA, EVIDENCIA Y ADVERTENCIAS')+@($Report.Gaps)+@($a.Conclusion)
     if($Report.PSObject.Properties['ActionHistory']) {
         $lines+=@('','ACCIONES Y RESULTADOS')
         foreach($h in $Report.ActionHistory){$lines+="$($h.Action) [$($h.Status)] $($h.Detail)"}

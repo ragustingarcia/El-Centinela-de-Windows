@@ -26,7 +26,7 @@ Assert (@($r.Analysis.Findings|Where-Object { $_.Level -eq 'Alert' -and $_.Title
 $r.Checks[2].Data[0].LocalAddress='0.0.0.0';$r=Add-ReportAnalysis $r
 Assert (@($r.Analysis.Findings|Where-Object Title -like 'Servicios escuchando*').Count -eq 1) 'Network listener produces contextual review'
 $r.Checks[0].Status='Unavailable';$r.Checks[0]|Add-Member Error 'denied';$r=Add-ReportAnalysis $r
-Assert ($r.Analysis.Unknown -eq 9) 'Unavailable check remains unknown'
+Assert ($r.Analysis.Unknown -eq 8) 'Unavailable check remains unknown'
 $r|Add-Member ActionHistory @([pscustomobject]@{Action='QuickScan';Status='Requested';Detail='Pending completion'})
 $text=Get-ReportText $r
 Assert ($text.Contains('coverage gap') -and $text.Contains('denied') -and $text.Contains('Pending completion')) 'Summary includes gaps failures and action results'
@@ -38,7 +38,7 @@ try {
     $folder=Export-DesktopReport $r
     Assert (Test-Path -LiteralPath (Join-Path $folder 'Resumen.txt')) 'Desktop export includes readable text'
     $saved=Get-Content -LiteralPath (Join-Path $folder 'Diagnostico.json') -Raw|ConvertFrom-Json
-    Assert ((Convert-ObservedDate $saved.Created) -eq (Convert-ObservedDate $r.Created) -and $saved.Analysis.Unknown -eq 9) 'Export uses cached analyzed snapshot'
+    Assert ((Convert-ObservedDate $saved.Created) -eq (Convert-ObservedDate $r.Created) -and $saved.Analysis.Unknown -eq 8) 'Export uses cached analyzed snapshot'
     Assert ($saved.ActionHistory[0].Status -eq 'Requested') 'Export retains action verification status'
     $second=Export-DesktopReport $r
     Assert ($second -ne $folder) 'Exports never overwrite previous snapshot'
@@ -92,6 +92,25 @@ function Invoke-ElevatedSecurity {param($Action,$Arguments) $script:elevatedActi
 Show-Solutions $cancel
 Assert ($script:elevatedAction -eq 'EnableRealtime') 'Approved correction delegates typed elevation instead of manual dead end'
 Assert ($cancel.ActionHistory[0].Status -eq 'Verified') 'Elevated result retained in exportable action history'
+$assessed=New-Fixture
+$assessed.Checks+=@([pscustomobject]@{Id='Support';Status='Checked';CheckedAt='fixture';Data=@([pscustomobject]@{Status='InSupportUntil';EndDate=[datetime]'2028-10-10';Source='fixture';Detail='fixture'})})
+$assessed.Checks+=@([pscustomobject]@{Id='Updates';Status='Checked';CheckedAt='fixture';Data=@([pscustomobject]@{Updates=@();RebootRequired=$false;Scope='fixture'})})
+$assessed=Add-ReportAnalysis $assessed
+Assert (@($assessed.Analysis.Findings|Where-Object {$_.Title -eq 'Soporte Windows y ESU/LTSC' -and $_.Level -eq 'OK'}).Count -eq 1) 'Supported version is favorable rather than generic review'
+Assert (@($assessed.Analysis.Findings|Where-Object {$_.Title -eq 'Parches Windows' -and $_.Level -eq 'OK'}).Count -eq 1) 'No offered updates is favorable within measured scope'
+($assessed.Checks|Where-Object Id -eq Updates).Data[0].Updates=@([pscustomobject]@{Security=$true})
+$assessed=Add-ReportAnalysis $assessed
+Assert (@($assessed.Analysis.Findings|Where-Object {$_.Title -eq 'Parches Windows' -and $_.Level -eq 'Alert'}).Count -eq 1) 'Applicable security patch creates actionable alert'
+$sample=[pscustomobject]@{Target='8.8.8.8';Family='4';Port=5000;Status='Reachable';At=[datetime]::UtcNow.ToString('o');EvidenceLink='fixture';Scope='fixture'}
+Add-DeepResult $assessed 'PublicProbe' {$sample}
+$second=$sample.PSObject.Copy();$second.Status='NoConnection'
+Add-DeepResult $assessed 'PublicProbe' {$second}
+Assert (@(($assessed.Checks|Where-Object Id -eq PublicProbe).Data).Count -eq 2) 'Public probe history retained for before-after verification'
+Assert (@($assessed.Analysis.Findings|Where-Object {$_.Title -eq 'Resultado externo TCP' -and $_.Level -eq 'Review'}).Count -eq 0) 'Latest negative probe is informational rather than unresolved vulnerability'
+$imported=New-Fixture
+$imported.Checks+=@([pscustomobject]@{Id='ExternalProbe';Status='Checked';Data=@([pscustomobject]@{Target='fixture';At='fixture';Results=@([pscustomobject]@{Status='NoConnection'});Provenance='declared';Scope='fixture'})})
+$imported=Add-ReportAnalysis $imported
+Assert (@($imported.Analysis.Findings|Where-Object Title -eq 'Prueba externa mediante servicio').Count -eq 0) 'Alternative imported probe does not require duplicate provider test'
 $summary=[pscustomobject]@{Engine=$PSVersionTable.PSVersion.ToString();Passed=$script:passed;Boundary='Synthetic reports and mocked Defender commands; isolated desktop export fixture. No real security changes.'}
 if($ResultPath){$summary|ConvertTo-Json|Set-Content -LiteralPath $ResultPath -Encoding UTF8}
 $summary|Format-List
